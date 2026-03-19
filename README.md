@@ -9,7 +9,7 @@ go get github.com/TakuyaYagam1/go-logkit
 ```
 
 ```go
-import logger "github.com/TakuyaYagam1/go-logkit"
+import "github.com/TakuyaYagam1/go-logkit"
 ```
 
 ## Features
@@ -24,18 +24,18 @@ import logger "github.com/TakuyaYagam1/go-logkit"
 ## Example
 
 ```go
-l, err := logger.New(
-    logger.WithLevel(logger.InfoLevel),
-    logger.WithOutput(logger.ConsoleOutput),
-    logger.WithServiceName("api"),
+l, err := logkit.New(
+    logkit.WithLevel(logkit.InfoLevel),
+    logkit.WithOutput(logkit.ConsoleOutput),
+    logkit.WithServiceName("api"),
 )
 if err != nil {
     log.Fatal(err)
 }
-l.Info("started", logger.RequestID("req-1"), logger.Duration(time.Second))
+l.Info("started", logkit.RequestID("req-1"), logkit.Duration(time.Second))
 
-ctx := logger.IntoContext(r.Context(), l)
-lFromCtx := logger.FromContext(ctx)
+ctx := logkit.IntoContext(r.Context(), l)
+lFromCtx := logkit.FromContext(ctx)
 ```
 
 ## API
@@ -49,5 +49,24 @@ lFromCtx := logger.FromContext(ctx)
 | New(opts...) | Build Logger; returns ErrEmptyFilename if file output without Filename |
 | Noop() | Logger that discards all output |
 | IntoContext, FromContext | Store/retrieve Logger in context |
-| TraceID, RequestID, UserID, Error, Duration, Component | Field helpers |
-| WithLevel, WithOutput, WithFileOptions, WithServiceName | Options |
+| WithLevel, WithOutput, WithFileOptions, WithServiceName, WithExitFunc | Options (WithExitFunc overrides exit on Fatal) |
+| TraceID, RequestID, UserID, Error, Duration, DurationMs, Component | Field helpers |
+| SlogHandler | Returns slog.Handler for use with log/slog |
+| DebugContext, InfoContext, WarnContext, ErrorContext, FatalContext | Context-aware log methods (ctx reserved for future tracing) |
+
+## Resource cleanup
+
+When using `FileOutput` or `BothOutput`, call `Close()` to flush and release the log file:
+
+```go
+l, err := logkit.New(
+    logkit.WithOutput(logkit.FileOutput),
+    logkit.WithFileOptions(logkit.FileOptions{Filename: "/var/log/app.log"}),
+)
+if err != nil {
+    log.Fatal(err)
+}
+defer l.Close()
+```
+
+`Close()` is safe to call multiple times. Only the first call has effect.

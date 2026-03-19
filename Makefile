@@ -1,10 +1,13 @@
-.PHONY: test test-race fmt vet mockery
+.PHONY: test test-race test-bench fmt vet mockery cover tidy
 
 test:
 	go test ./...
 
 test-race:
 	go test -race ./...
+
+test-bench:
+	go test -bench=. ./...
 
 fmt:
 	gofmt -w .
@@ -15,3 +18,9 @@ vet:
 
 mockery:
 	mockery --config .mockery.yml
+
+cover:
+	go test -coverprofile=coverage.out ./... && go tool cover -html=coverage.out
+
+tidy:
+	go mod tidy

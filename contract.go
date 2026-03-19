@@ -1,9 +1,12 @@
-package logger
+package logkit
 
-// Level is the minimum level at which log events are emitted. Unknown values are treated as InfoLevel.
+import "context"
+
+// Level is the minimum level at which log events are emitted. Events below this level are dropped.
+// Pass to WithLevel when building a logger; unknown values are treated as InfoLevel.
 type Level int
 
-// Log levels. DebugLevel is the lowest, FatalLevel the highest.
+// Log levels; DebugLevel is the lowest, FatalLevel the highest.
 const (
 	DebugLevel Level = iota
 	InfoLevel
@@ -15,34 +18,34 @@ const (
 // OutputType selects where log output is written (console, file, or both).
 type OutputType int
 
-// Output destinations: console only, file only, or both.
+// Output destinations.
 const (
 	ConsoleOutput OutputType = iota
 	FileOutput
 	BothOutput
 )
 
-// Fields is a key-value map attached to a log event. Multiple Fields passed to one call are merged; later keys override earlier ones.
-// Fields are shallow-copied when passed to WithFields or to log methods; nested maps and slices are shared and must not be mutated concurrently. Do not mutate a Fields map after passing it to a log method or WithFields.
-type Fields = map[string]any
+// Fields is a key-value map attached to a log event. Keys and values are sanitized: control characters
+// (including \r, \n, NUL, U+2028, U+2029) are replaced with space to reduce log injection.
+// Multiple Fields passed to one call are merged; later keys override earlier ones.
+// Shallow-copied when passed to WithFields or log methods; do not mutate the map after passing.
+type Fields map[string]any
 
-// Logger is the interface for structured logging. All level methods accept an optional variadic Fields.
-// Close releases resources (e.g. file handles); typically call only on the root logger.
+// Logger is the interface for structured logging. Implementations are safe for concurrent use.
+// Close releases underlying output (e.g. file); child loggers from WithFields or WithError share the same output—
+// closing any of them closes it for all. Call Close only once, typically on the root logger via defer.
 type Logger interface {
-	// Debug logs at debug level.
 	Debug(msg string, fields ...Fields)
-	// Info logs at info level.
 	Info(msg string, fields ...Fields)
-	// Warn logs at warn level.
 	Warn(msg string, fields ...Fields)
-	// Error logs at error level.
 	Error(msg string, fields ...Fields)
-	// Fatal logs at fatal level, then closes the logger and calls the configured exit function (default os.Exit(1)). Deferred functions in the caller are not run.
 	Fatal(msg string, fields ...Fields)
-	// WithFields returns a logger that includes the given fields in every subsequent log event.
+	DebugContext(ctx context.Context, msg string, fields ...Fields)
+	InfoContext(ctx context.Context, msg string, fields ...Fields)
+	WarnContext(ctx context.Context, msg string, fields ...Fields)
+	ErrorContext(ctx context.Context, msg string, fields ...Fields)
+	FatalContext(ctx context.Context, msg string, fields ...Fields)
 	WithFields(fields Fields) Logger
-	// WithError returns a logger that includes err in the next log event (e.g. for structured error logging).
 	WithError(err error) Logger
-	// Close releases resources. Safe to call multiple times; only the first call has effect.
 	Close() error
 }

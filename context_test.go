@@ -1,4 +1,4 @@
-package logger
+package logkit
 
 import (
 	"context"
@@ -25,4 +25,11 @@ func TestFromContext_NilLogger(t *testing.T) {
 	var nilLogger Logger
 	ctx := context.WithValue(context.Background(), contextKey{}, nilLogger)
 	assert.Equal(t, Noop(), FromContext(ctx))
+}
+
+func TestIntoContext_NilContext_Panics(t *testing.T) {
+	l, err := New(WithLevel(InfoLevel), WithOutput(ConsoleOutput))
+	require.NoError(t, err)
+	// SA1012: nil is intentional to verify IntoContext panics on nil context
+	require.Panics(t, func() { IntoContext(nil, l) })
 }

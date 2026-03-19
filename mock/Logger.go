@@ -5,6 +5,8 @@
 package mock
 
 import (
+	"context"
+
 	"github.com/TakuyaYagam1/go-logkit"
 	mock "github.com/stretchr/testify/mock"
 )
@@ -81,7 +83,7 @@ func (_c *MockLogger_Close_Call) RunAndReturn(run func() error) *MockLogger_Clos
 }
 
 // Debug provides a mock function for the type MockLogger
-func (_mock *MockLogger) Debug(msg string, fields ...logger.Fields) {
+func (_mock *MockLogger) Debug(msg string, fields ...logkit.Fields) {
 	if len(fields) > 0 {
 		_mock.Called(msg, fields)
 	} else {
@@ -98,22 +100,22 @@ type MockLogger_Debug_Call struct {
 
 // Debug is a helper method to define mock.On call
 //   - msg string
-//   - fields ...logger.Fields
+//   - fields ...logkit.Fields
 func (_e *MockLogger_Expecter) Debug(msg interface{}, fields ...interface{}) *MockLogger_Debug_Call {
 	return &MockLogger_Debug_Call{Call: _e.mock.On("Debug",
 		append([]interface{}{msg}, fields...)...)}
 }
 
-func (_c *MockLogger_Debug_Call) Run(run func(msg string, fields ...logger.Fields)) *MockLogger_Debug_Call {
+func (_c *MockLogger_Debug_Call) Run(run func(msg string, fields ...logkit.Fields)) *MockLogger_Debug_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 string
 		if args[0] != nil {
 			arg0 = args[0].(string)
 		}
-		var arg1 []logger.Fields
-		var variadicArgs []logger.Fields
+		var arg1 []logkit.Fields
+		var variadicArgs []logkit.Fields
 		if len(args) > 1 {
-			variadicArgs = args[1].([]logger.Fields)
+			variadicArgs = args[1].([]logkit.Fields)
 		}
 		arg1 = variadicArgs
 		run(
@@ -129,13 +131,73 @@ func (_c *MockLogger_Debug_Call) Return() *MockLogger_Debug_Call {
 	return _c
 }
 
-func (_c *MockLogger_Debug_Call) RunAndReturn(run func(msg string, fields ...logger.Fields)) *MockLogger_Debug_Call {
+func (_c *MockLogger_Debug_Call) RunAndReturn(run func(msg string, fields ...logkit.Fields)) *MockLogger_Debug_Call {
+	_c.Run(run)
+	return _c
+}
+
+// DebugContext provides a mock function for the type MockLogger
+func (_mock *MockLogger) DebugContext(ctx context.Context, msg string, fields ...logkit.Fields) {
+	if len(fields) > 0 {
+		_mock.Called(ctx, msg, fields)
+	} else {
+		_mock.Called(ctx, msg)
+	}
+
+	return
+}
+
+// MockLogger_DebugContext_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'DebugContext'
+type MockLogger_DebugContext_Call struct {
+	*mock.Call
+}
+
+// DebugContext is a helper method to define mock.On call
+//   - ctx context.Context
+//   - msg string
+//   - fields ...logkit.Fields
+func (_e *MockLogger_Expecter) DebugContext(ctx interface{}, msg interface{}, fields ...interface{}) *MockLogger_DebugContext_Call {
+	return &MockLogger_DebugContext_Call{Call: _e.mock.On("DebugContext",
+		append([]interface{}{ctx, msg}, fields...)...)}
+}
+
+func (_c *MockLogger_DebugContext_Call) Run(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_DebugContext_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 []logkit.Fields
+		var variadicArgs []logkit.Fields
+		if len(args) > 2 {
+			variadicArgs = args[2].([]logkit.Fields)
+		}
+		arg2 = variadicArgs
+		run(
+			arg0,
+			arg1,
+			arg2...,
+		)
+	})
+	return _c
+}
+
+func (_c *MockLogger_DebugContext_Call) Return() *MockLogger_DebugContext_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockLogger_DebugContext_Call) RunAndReturn(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_DebugContext_Call {
 	_c.Run(run)
 	return _c
 }
 
 // Error provides a mock function for the type MockLogger
-func (_mock *MockLogger) Error(msg string, fields ...logger.Fields) {
+func (_mock *MockLogger) Error(msg string, fields ...logkit.Fields) {
 	if len(fields) > 0 {
 		_mock.Called(msg, fields)
 	} else {
@@ -152,22 +214,22 @@ type MockLogger_Error_Call struct {
 
 // Error is a helper method to define mock.On call
 //   - msg string
-//   - fields ...logger.Fields
+//   - fields ...logkit.Fields
 func (_e *MockLogger_Expecter) Error(msg interface{}, fields ...interface{}) *MockLogger_Error_Call {
 	return &MockLogger_Error_Call{Call: _e.mock.On("Error",
 		append([]interface{}{msg}, fields...)...)}
 }
 
-func (_c *MockLogger_Error_Call) Run(run func(msg string, fields ...logger.Fields)) *MockLogger_Error_Call {
+func (_c *MockLogger_Error_Call) Run(run func(msg string, fields ...logkit.Fields)) *MockLogger_Error_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 string
 		if args[0] != nil {
 			arg0 = args[0].(string)
 		}
-		var arg1 []logger.Fields
-		var variadicArgs []logger.Fields
+		var arg1 []logkit.Fields
+		var variadicArgs []logkit.Fields
 		if len(args) > 1 {
-			variadicArgs = args[1].([]logger.Fields)
+			variadicArgs = args[1].([]logkit.Fields)
 		}
 		arg1 = variadicArgs
 		run(
@@ -183,13 +245,73 @@ func (_c *MockLogger_Error_Call) Return() *MockLogger_Error_Call {
 	return _c
 }
 
-func (_c *MockLogger_Error_Call) RunAndReturn(run func(msg string, fields ...logger.Fields)) *MockLogger_Error_Call {
+func (_c *MockLogger_Error_Call) RunAndReturn(run func(msg string, fields ...logkit.Fields)) *MockLogger_Error_Call {
+	_c.Run(run)
+	return _c
+}
+
+// ErrorContext provides a mock function for the type MockLogger
+func (_mock *MockLogger) ErrorContext(ctx context.Context, msg string, fields ...logkit.Fields) {
+	if len(fields) > 0 {
+		_mock.Called(ctx, msg, fields)
+	} else {
+		_mock.Called(ctx, msg)
+	}
+
+	return
+}
+
+// MockLogger_ErrorContext_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ErrorContext'
+type MockLogger_ErrorContext_Call struct {
+	*mock.Call
+}
+
+// ErrorContext is a helper method to define mock.On call
+//   - ctx context.Context
+//   - msg string
+//   - fields ...logkit.Fields
+func (_e *MockLogger_Expecter) ErrorContext(ctx interface{}, msg interface{}, fields ...interface{}) *MockLogger_ErrorContext_Call {
+	return &MockLogger_ErrorContext_Call{Call: _e.mock.On("ErrorContext",
+		append([]interface{}{ctx, msg}, fields...)...)}
+}
+
+func (_c *MockLogger_ErrorContext_Call) Run(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_ErrorContext_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 []logkit.Fields
+		var variadicArgs []logkit.Fields
+		if len(args) > 2 {
+			variadicArgs = args[2].([]logkit.Fields)
+		}
+		arg2 = variadicArgs
+		run(
+			arg0,
+			arg1,
+			arg2...,
+		)
+	})
+	return _c
+}
+
+func (_c *MockLogger_ErrorContext_Call) Return() *MockLogger_ErrorContext_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockLogger_ErrorContext_Call) RunAndReturn(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_ErrorContext_Call {
 	_c.Run(run)
 	return _c
 }
 
 // Fatal provides a mock function for the type MockLogger
-func (_mock *MockLogger) Fatal(msg string, fields ...logger.Fields) {
+func (_mock *MockLogger) Fatal(msg string, fields ...logkit.Fields) {
 	if len(fields) > 0 {
 		_mock.Called(msg, fields)
 	} else {
@@ -206,22 +328,22 @@ type MockLogger_Fatal_Call struct {
 
 // Fatal is a helper method to define mock.On call
 //   - msg string
-//   - fields ...logger.Fields
+//   - fields ...logkit.Fields
 func (_e *MockLogger_Expecter) Fatal(msg interface{}, fields ...interface{}) *MockLogger_Fatal_Call {
 	return &MockLogger_Fatal_Call{Call: _e.mock.On("Fatal",
 		append([]interface{}{msg}, fields...)...)}
 }
 
-func (_c *MockLogger_Fatal_Call) Run(run func(msg string, fields ...logger.Fields)) *MockLogger_Fatal_Call {
+func (_c *MockLogger_Fatal_Call) Run(run func(msg string, fields ...logkit.Fields)) *MockLogger_Fatal_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 string
 		if args[0] != nil {
 			arg0 = args[0].(string)
 		}
-		var arg1 []logger.Fields
-		var variadicArgs []logger.Fields
+		var arg1 []logkit.Fields
+		var variadicArgs []logkit.Fields
 		if len(args) > 1 {
-			variadicArgs = args[1].([]logger.Fields)
+			variadicArgs = args[1].([]logkit.Fields)
 		}
 		arg1 = variadicArgs
 		run(
@@ -237,13 +359,73 @@ func (_c *MockLogger_Fatal_Call) Return() *MockLogger_Fatal_Call {
 	return _c
 }
 
-func (_c *MockLogger_Fatal_Call) RunAndReturn(run func(msg string, fields ...logger.Fields)) *MockLogger_Fatal_Call {
+func (_c *MockLogger_Fatal_Call) RunAndReturn(run func(msg string, fields ...logkit.Fields)) *MockLogger_Fatal_Call {
+	_c.Run(run)
+	return _c
+}
+
+// FatalContext provides a mock function for the type MockLogger
+func (_mock *MockLogger) FatalContext(ctx context.Context, msg string, fields ...logkit.Fields) {
+	if len(fields) > 0 {
+		_mock.Called(ctx, msg, fields)
+	} else {
+		_mock.Called(ctx, msg)
+	}
+
+	return
+}
+
+// MockLogger_FatalContext_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'FatalContext'
+type MockLogger_FatalContext_Call struct {
+	*mock.Call
+}
+
+// FatalContext is a helper method to define mock.On call
+//   - ctx context.Context
+//   - msg string
+//   - fields ...logkit.Fields
+func (_e *MockLogger_Expecter) FatalContext(ctx interface{}, msg interface{}, fields ...interface{}) *MockLogger_FatalContext_Call {
+	return &MockLogger_FatalContext_Call{Call: _e.mock.On("FatalContext",
+		append([]interface{}{ctx, msg}, fields...)...)}
+}
+
+func (_c *MockLogger_FatalContext_Call) Run(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_FatalContext_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 []logkit.Fields
+		var variadicArgs []logkit.Fields
+		if len(args) > 2 {
+			variadicArgs = args[2].([]logkit.Fields)
+		}
+		arg2 = variadicArgs
+		run(
+			arg0,
+			arg1,
+			arg2...,
+		)
+	})
+	return _c
+}
+
+func (_c *MockLogger_FatalContext_Call) Return() *MockLogger_FatalContext_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockLogger_FatalContext_Call) RunAndReturn(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_FatalContext_Call {
 	_c.Run(run)
 	return _c
 }
 
 // Info provides a mock function for the type MockLogger
-func (_mock *MockLogger) Info(msg string, fields ...logger.Fields) {
+func (_mock *MockLogger) Info(msg string, fields ...logkit.Fields) {
 	if len(fields) > 0 {
 		_mock.Called(msg, fields)
 	} else {
@@ -260,22 +442,22 @@ type MockLogger_Info_Call struct {
 
 // Info is a helper method to define mock.On call
 //   - msg string
-//   - fields ...logger.Fields
+//   - fields ...logkit.Fields
 func (_e *MockLogger_Expecter) Info(msg interface{}, fields ...interface{}) *MockLogger_Info_Call {
 	return &MockLogger_Info_Call{Call: _e.mock.On("Info",
 		append([]interface{}{msg}, fields...)...)}
 }
 
-func (_c *MockLogger_Info_Call) Run(run func(msg string, fields ...logger.Fields)) *MockLogger_Info_Call {
+func (_c *MockLogger_Info_Call) Run(run func(msg string, fields ...logkit.Fields)) *MockLogger_Info_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 string
 		if args[0] != nil {
 			arg0 = args[0].(string)
 		}
-		var arg1 []logger.Fields
-		var variadicArgs []logger.Fields
+		var arg1 []logkit.Fields
+		var variadicArgs []logkit.Fields
 		if len(args) > 1 {
-			variadicArgs = args[1].([]logger.Fields)
+			variadicArgs = args[1].([]logkit.Fields)
 		}
 		arg1 = variadicArgs
 		run(
@@ -291,13 +473,73 @@ func (_c *MockLogger_Info_Call) Return() *MockLogger_Info_Call {
 	return _c
 }
 
-func (_c *MockLogger_Info_Call) RunAndReturn(run func(msg string, fields ...logger.Fields)) *MockLogger_Info_Call {
+func (_c *MockLogger_Info_Call) RunAndReturn(run func(msg string, fields ...logkit.Fields)) *MockLogger_Info_Call {
+	_c.Run(run)
+	return _c
+}
+
+// InfoContext provides a mock function for the type MockLogger
+func (_mock *MockLogger) InfoContext(ctx context.Context, msg string, fields ...logkit.Fields) {
+	if len(fields) > 0 {
+		_mock.Called(ctx, msg, fields)
+	} else {
+		_mock.Called(ctx, msg)
+	}
+
+	return
+}
+
+// MockLogger_InfoContext_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'InfoContext'
+type MockLogger_InfoContext_Call struct {
+	*mock.Call
+}
+
+// InfoContext is a helper method to define mock.On call
+//   - ctx context.Context
+//   - msg string
+//   - fields ...logkit.Fields
+func (_e *MockLogger_Expecter) InfoContext(ctx interface{}, msg interface{}, fields ...interface{}) *MockLogger_InfoContext_Call {
+	return &MockLogger_InfoContext_Call{Call: _e.mock.On("InfoContext",
+		append([]interface{}{ctx, msg}, fields...)...)}
+}
+
+func (_c *MockLogger_InfoContext_Call) Run(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_InfoContext_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 []logkit.Fields
+		var variadicArgs []logkit.Fields
+		if len(args) > 2 {
+			variadicArgs = args[2].([]logkit.Fields)
+		}
+		arg2 = variadicArgs
+		run(
+			arg0,
+			arg1,
+			arg2...,
+		)
+	})
+	return _c
+}
+
+func (_c *MockLogger_InfoContext_Call) Return() *MockLogger_InfoContext_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockLogger_InfoContext_Call) RunAndReturn(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_InfoContext_Call {
 	_c.Run(run)
 	return _c
 }
 
 // Warn provides a mock function for the type MockLogger
-func (_mock *MockLogger) Warn(msg string, fields ...logger.Fields) {
+func (_mock *MockLogger) Warn(msg string, fields ...logkit.Fields) {
 	if len(fields) > 0 {
 		_mock.Called(msg, fields)
 	} else {
@@ -314,22 +556,22 @@ type MockLogger_Warn_Call struct {
 
 // Warn is a helper method to define mock.On call
 //   - msg string
-//   - fields ...logger.Fields
+//   - fields ...logkit.Fields
 func (_e *MockLogger_Expecter) Warn(msg interface{}, fields ...interface{}) *MockLogger_Warn_Call {
 	return &MockLogger_Warn_Call{Call: _e.mock.On("Warn",
 		append([]interface{}{msg}, fields...)...)}
 }
 
-func (_c *MockLogger_Warn_Call) Run(run func(msg string, fields ...logger.Fields)) *MockLogger_Warn_Call {
+func (_c *MockLogger_Warn_Call) Run(run func(msg string, fields ...logkit.Fields)) *MockLogger_Warn_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 string
 		if args[0] != nil {
 			arg0 = args[0].(string)
 		}
-		var arg1 []logger.Fields
-		var variadicArgs []logger.Fields
+		var arg1 []logkit.Fields
+		var variadicArgs []logkit.Fields
 		if len(args) > 1 {
-			variadicArgs = args[1].([]logger.Fields)
+			variadicArgs = args[1].([]logkit.Fields)
 		}
 		arg1 = variadicArgs
 		run(
@@ -345,25 +587,85 @@ func (_c *MockLogger_Warn_Call) Return() *MockLogger_Warn_Call {
 	return _c
 }
 
-func (_c *MockLogger_Warn_Call) RunAndReturn(run func(msg string, fields ...logger.Fields)) *MockLogger_Warn_Call {
+func (_c *MockLogger_Warn_Call) RunAndReturn(run func(msg string, fields ...logkit.Fields)) *MockLogger_Warn_Call {
+	_c.Run(run)
+	return _c
+}
+
+// WarnContext provides a mock function for the type MockLogger
+func (_mock *MockLogger) WarnContext(ctx context.Context, msg string, fields ...logkit.Fields) {
+	if len(fields) > 0 {
+		_mock.Called(ctx, msg, fields)
+	} else {
+		_mock.Called(ctx, msg)
+	}
+
+	return
+}
+
+// MockLogger_WarnContext_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'WarnContext'
+type MockLogger_WarnContext_Call struct {
+	*mock.Call
+}
+
+// WarnContext is a helper method to define mock.On call
+//   - ctx context.Context
+//   - msg string
+//   - fields ...logkit.Fields
+func (_e *MockLogger_Expecter) WarnContext(ctx interface{}, msg interface{}, fields ...interface{}) *MockLogger_WarnContext_Call {
+	return &MockLogger_WarnContext_Call{Call: _e.mock.On("WarnContext",
+		append([]interface{}{ctx, msg}, fields...)...)}
+}
+
+func (_c *MockLogger_WarnContext_Call) Run(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_WarnContext_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 []logkit.Fields
+		var variadicArgs []logkit.Fields
+		if len(args) > 2 {
+			variadicArgs = args[2].([]logkit.Fields)
+		}
+		arg2 = variadicArgs
+		run(
+			arg0,
+			arg1,
+			arg2...,
+		)
+	})
+	return _c
+}
+
+func (_c *MockLogger_WarnContext_Call) Return() *MockLogger_WarnContext_Call {
+	_c.Call.Return()
+	return _c
+}
+
+func (_c *MockLogger_WarnContext_Call) RunAndReturn(run func(ctx context.Context, msg string, fields ...logkit.Fields)) *MockLogger_WarnContext_Call {
 	_c.Run(run)
 	return _c
 }
 
 // WithError provides a mock function for the type MockLogger
-func (_mock *MockLogger) WithError(err error) logger.Logger {
+func (_mock *MockLogger) WithError(err error) logkit.Logger {
 	ret := _mock.Called(err)
 
 	if len(ret) == 0 {
 		panic("no return value specified for WithError")
 	}
 
-	var r0 logger.Logger
-	if returnFunc, ok := ret.Get(0).(func(error) logger.Logger); ok {
+	var r0 logkit.Logger
+	if returnFunc, ok := ret.Get(0).(func(error) logkit.Logger); ok {
 		r0 = returnFunc(err)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(logger.Logger)
+			r0 = ret.Get(0).(logkit.Logger)
 		}
 	}
 	return r0
@@ -393,30 +695,30 @@ func (_c *MockLogger_WithError_Call) Run(run func(err error)) *MockLogger_WithEr
 	return _c
 }
 
-func (_c *MockLogger_WithError_Call) Return(logger1 logger.Logger) *MockLogger_WithError_Call {
-	_c.Call.Return(logger1)
+func (_c *MockLogger_WithError_Call) Return(logger logkit.Logger) *MockLogger_WithError_Call {
+	_c.Call.Return(logger)
 	return _c
 }
 
-func (_c *MockLogger_WithError_Call) RunAndReturn(run func(err error) logger.Logger) *MockLogger_WithError_Call {
+func (_c *MockLogger_WithError_Call) RunAndReturn(run func(err error) logkit.Logger) *MockLogger_WithError_Call {
 	_c.Call.Return(run)
 	return _c
 }
 
 // WithFields provides a mock function for the type MockLogger
-func (_mock *MockLogger) WithFields(fields logger.Fields) logger.Logger {
+func (_mock *MockLogger) WithFields(fields logkit.Fields) logkit.Logger {
 	ret := _mock.Called(fields)
 
 	if len(ret) == 0 {
 		panic("no return value specified for WithFields")
 	}
 
-	var r0 logger.Logger
-	if returnFunc, ok := ret.Get(0).(func(logger.Fields) logger.Logger); ok {
+	var r0 logkit.Logger
+	if returnFunc, ok := ret.Get(0).(func(logkit.Fields) logkit.Logger); ok {
 		r0 = returnFunc(fields)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(logger.Logger)
+			r0 = ret.Get(0).(logkit.Logger)
 		}
 	}
 	return r0
@@ -428,16 +730,16 @@ type MockLogger_WithFields_Call struct {
 }
 
 // WithFields is a helper method to define mock.On call
-//   - fields logger.Fields
+//   - fields logkit.Fields
 func (_e *MockLogger_Expecter) WithFields(fields interface{}) *MockLogger_WithFields_Call {
 	return &MockLogger_WithFields_Call{Call: _e.mock.On("WithFields", fields)}
 }
 
-func (_c *MockLogger_WithFields_Call) Run(run func(fields logger.Fields)) *MockLogger_WithFields_Call {
+func (_c *MockLogger_WithFields_Call) Run(run func(fields logkit.Fields)) *MockLogger_WithFields_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		var arg0 logger.Fields
+		var arg0 logkit.Fields
 		if args[0] != nil {
-			arg0 = args[0].(logger.Fields)
+			arg0 = args[0].(logkit.Fields)
 		}
 		run(
 			arg0,
@@ -446,12 +748,12 @@ func (_c *MockLogger_WithFields_Call) Run(run func(fields logger.Fields)) *MockL
 	return _c
 }
 
-func (_c *MockLogger_WithFields_Call) Return(logger1 logger.Logger) *MockLogger_WithFields_Call {
-	_c.Call.Return(logger1)
+func (_c *MockLogger_WithFields_Call) Return(logger logkit.Logger) *MockLogger_WithFields_Call {
+	_c.Call.Return(logger)
 	return _c
 }
 
-func (_c *MockLogger_WithFields_Call) RunAndReturn(run func(fields logger.Fields) logger.Logger) *MockLogger_WithFields_Call {
+func (_c *MockLogger_WithFields_Call) RunAndReturn(run func(fields logkit.Fields) logkit.Logger) *MockLogger_WithFields_Call {
 	_c.Call.Return(run)
 	return _c
 }
