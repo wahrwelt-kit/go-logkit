@@ -1,19 +1,19 @@
 # go-logkit
 
-[![CI](https://github.com/TakuyaYagam1/go-logkit/actions/workflows/ci.yml/badge.svg)](https://github.com/TakuyaYagam1/go-logkit/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/TakuyaYagam1/go-logkit.svg)](https://pkg.go.dev/github.com/TakuyaYagam1/go-logkit)
-[![Go Report Card](https://goreportcard.com/badge/github.com/TakuyaYagam1/go-logkit)](https://goreportcard.com/report/github.com/TakuyaYagam1/go-logkit)
+[![CI](https://github.com/takuya-go-kit/go-logkit/actions/workflows/ci.yml/badge.svg)](https://github.com/takuya-go-kit/go-logkit/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/takuya-go-kit/go-logkit.svg)](https://pkg.go.dev/github.com/takuya-go-kit/go-logkit)
+[![Go Report Card](https://goreportcard.com/badge/github.com/takuya-go-kit/go-logkit)](https://goreportcard.com/report/github.com/takuya-go-kit/go-logkit)
 
 Structured logging interface backed by zerolog.
 
 ## Install
 
 ```bash
-go get github.com/TakuyaYagam1/go-logkit
+go get github.com/takuya-go-kit/go-logkit
 ```
 
 ```go
-import "github.com/TakuyaYagam1/go-logkit"
+import "github.com/takuya-go-kit/go-logkit"
 ```
 
 ## Features

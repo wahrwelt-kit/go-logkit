@@ -5,7 +5,7 @@ log-level: info
 template: testify
 
 packages:
-  github.com/TakuyaYagam1/go-logkit:
+  github.com/takuya-go-kit/go-logkit:
     interfaces:
       Logger:
         config:

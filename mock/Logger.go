@@ -7,7 +7,7 @@ package mock
 import (
 	"context"
 
-	"github.com/TakuyaYagam1/go-logkit"
+	"github.com/takuya-go-kit/go-logkit"
 	mock "github.com/stretchr/testify/mock"
 )
 
