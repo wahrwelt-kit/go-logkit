@@ -1,9 +1,9 @@
 module github.com/wahrwelt-kit/go-logkit
 
-go 1.25.0
+go 1.26.0
 
 require (
-	github.com/rs/zerolog v1.34.0
+	github.com/rs/zerolog v1.35.0
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"reflect"
 	"strings"
@@ -21,9 +22,10 @@ const (
 	defaultMaxSize    = 100
 	defaultMaxBackups = 5
 	defaultMaxAgeDays = 30
+	nilValue          = "<nil>"
 )
 
-// applyFileDefaults fills zero MaxSize, MaxBackups, MaxAge with defaults for lumberjack.
+// applyFileDefaults fills zero MaxSize, MaxBackups, MaxAge with defaults for lumberjack
 func applyFileDefaults(fo FileOptions) FileOptions {
 	if fo.MaxSize <= 0 {
 		fo.MaxSize = defaultMaxSize
@@ -37,13 +39,13 @@ func applyFileDefaults(fo FileOptions) FileOptions {
 	return fo
 }
 
-// loggerState holds closed flag and mutex shared by zerologLogger and its WithFields/WithError children.
+// loggerState holds closed flag and mutex shared by zerologLogger and its WithFields/WithError children
 type loggerState struct {
 	mu     sync.RWMutex
 	closed bool
 }
 
-// zerologLogger implements Logger using zerolog and optional lumberjack for file output.
+// zerologLogger implements Logger using zerolog and optional lumberjack for file output
 type zerologLogger struct {
 	zl        zerolog.Logger
 	closer    io.Closer
@@ -53,10 +55,10 @@ type zerologLogger struct {
 	exitFunc  func(int)
 }
 
-// New builds a Logger from the given options. Defaults are InfoLevel and ConsoleOutput; nil options are ignored.
-// Use WithLevel, WithOutput, WithFileOptions, WithServiceName, and WithExitFunc to configure.
-// When Output is FileOutput or BothOutput, FileOptions.Filename must be set; otherwise New returns ErrEmptyFilename.
-// Unknown Level values are treated as InfoLevel. Call Close on the returned logger when done (e.g. defer) to release file output.
+// New builds a Logger from the given options. Defaults are InfoLevel and ConsoleOutput; nil options are ignored
+// Use WithLevel, WithOutput, WithFileOptions, WithServiceName, and WithExitFunc to configure
+// When Output is FileOutput or BothOutput, FileOptions.Filename must be set; otherwise New returns ErrEmptyFilename
+// Unknown Level values are treated as InfoLevel. Call Close on the returned logger when done (e.g. defer) to release file output
 func New(opts ...Option) (Logger, error) {
 	o := &Options{
 		Level:  InfoLevel,
@@ -116,35 +118,35 @@ func New(opts ...Option) (Logger, error) {
 }
 
 func (l *zerologLogger) Debug(msg string, fields ...Fields) {
-	l.log(l.zl.Debug(), msg, fields...)
+	l.log(l.zl.Debug(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) Info(msg string, fields ...Fields) {
-	l.log(l.zl.Info(), msg, fields...)
+	l.log(l.zl.Info(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) Warn(msg string, fields ...Fields) {
-	l.log(l.zl.Warn(), msg, fields...)
+	l.log(l.zl.Warn(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) Error(msg string, fields ...Fields) {
-	l.log(l.zl.Error(), msg, fields...)
+	l.log(l.zl.Error(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) DebugContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Debug(), msg, fields...)
+	l.log(l.zl.Debug(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) InfoContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Info(), msg, fields...)
+	l.log(l.zl.Info(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) WarnContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Warn(), msg, fields...)
+	l.log(l.zl.Warn(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) ErrorContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Error(), msg, fields...)
+	l.log(l.zl.Error(), msg, fields...) //nolint:zerologlint
 }
 
 func (l *zerologLogger) FatalContext(_ context.Context, msg string, fields ...Fields) {
@@ -164,10 +166,8 @@ func (l *zerologLogger) Fatal(msg string, fields ...Fields) {
 
 func (l *zerologLogger) WithFields(fields Fields) Logger {
 	s := sanitizeFields(fields)
-	m := make(map[string]interface{}, len(s))
-	for k, v := range s {
-		m[k] = v
-	}
+	m := make(map[string]any, len(s))
+	maps.Copy(m, s)
 	return &zerologLogger{zl: l.zl.With().Fields(m).Logger(), closer: l.closer, closeOnce: l.closeOnce, exitOnce: l.exitOnce, state: l.state, exitFunc: l.exitFunc}
 }
 
@@ -192,7 +192,7 @@ func (l *zerologLogger) Close() error {
 	return err
 }
 
-// sanitizeMsg replaces control characters (including \r, \n) and Unicode line/paragraph separators (U+2028, U+2029) with space to reduce log injection.
+// sanitizeMsg replaces control characters (including \r, \n) and Unicode line/paragraph separators (U+2028, U+2029) with space to reduce log injection
 func sanitizeMsg(msg string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7F || r == 0x2028 || r == 0x2029 {
@@ -225,19 +225,19 @@ func sanitizeFields(in Fields) Fields {
 			out[key] = sanitizeMsg(val)
 		case error:
 			if isNilInterface(val) {
-				out[key] = "<nil>"
+				out[key] = nilValue
 			} else {
 				out[key] = sanitizeMsg(val.Error())
 			}
 		case fmt.Stringer:
 			if isNilInterface(val) {
-				out[key] = "<nil>"
+				out[key] = nilValue
 			} else {
 				out[key] = sanitizeMsg(val.String())
 			}
 		case json.Marshaler:
 			if isNilInterface(val) {
-				out[key] = "<nil>"
+				out[key] = nilValue
 			} else {
 				b, err := val.MarshalJSON()
 				if err != nil {
@@ -248,7 +248,7 @@ func sanitizeFields(in Fields) Fields {
 			}
 		case encoding.TextMarshaler:
 			if isNilInterface(val) {
-				out[key] = "<nil>"
+				out[key] = nilValue
 			} else {
 				b, err := val.MarshalText()
 				if err != nil {
@@ -264,7 +264,7 @@ func sanitizeFields(in Fields) Fields {
 	return out
 }
 
-// log checks closed under RLock and skips write if already closed; otherwise delegates to logUnchecked.
+// log checks closed under RLock and skips write if already closed; otherwise delegates to logUnchecked
 func (l *zerologLogger) log(event *zerolog.Event, msg string, fields ...Fields) {
 	l.state.mu.RLock()
 	defer l.state.mu.RUnlock()
@@ -274,15 +274,13 @@ func (l *zerologLogger) log(event *zerolog.Event, msg string, fields ...Fields) 
 	l.logUnchecked(event, msg, fields...)
 }
 
-// logUnchecked writes the event without checking closed; used by log and by Fatal (after which process exits).
-// Inline fields are sanitized here; WithFields already sanitizes once when building the zerolog context, so no double sanitization for child-logger fields.
+// logUnchecked writes the event without checking closed; used by log and by Fatal (after which process exits)
+// Inline fields are sanitized here; WithFields already sanitizes once when building the zerolog context, so no double sanitization for child-logger fields
 func (l *zerologLogger) logUnchecked(event *zerolog.Event, msg string, fields ...Fields) {
 	var merged Fields
 	if len(fields) == 1 {
 		merged = make(Fields, len(fields[0]))
-		for k, v := range fields[0] {
-			merged[k] = v
-		}
+		maps.Copy(merged, fields[0])
 	} else if len(fields) > 1 {
 		n := 0
 		for _, f := range fields {
@@ -290,23 +288,19 @@ func (l *zerologLogger) logUnchecked(event *zerolog.Event, msg string, fields ..
 		}
 		merged = make(Fields, n)
 		for _, f := range fields {
-			for k, v := range f {
-				merged[k] = v
-			}
+			maps.Copy(merged, f)
 		}
 	}
 	if len(merged) > 0 {
 		s := sanitizeFields(merged)
-		m := make(map[string]interface{}, len(s))
-		for k, v := range s {
-			m[k] = v
-		}
+		m := make(map[string]any, len(s))
+		maps.Copy(m, s)
 		event.Fields(m)
 	}
 	event.Msg(sanitizeMsg(msg))
 }
 
-// convertLogLevel maps Level to zerolog.Level; unknown values map to InfoLevel.
+// convertLogLevel maps Level to zerolog.Level; unknown values map to InfoLevel
 func convertLogLevel(level Level) zerolog.Level {
 	switch level {
 	case DebugLevel:
@@ -324,14 +318,36 @@ func convertLogLevel(level Level) zerolog.Level {
 	}
 }
 
-// noopLogger implements Logger by discarding all output; Fatal does not call os.Exit(1).
+// convertZerologLevel maps zerolog.Level back to Level; unknown values map to InfoLevel
+func convertZerologLevel(level zerolog.Level) Level {
+	switch level {
+	case zerolog.DebugLevel:
+		return DebugLevel
+	case zerolog.WarnLevel:
+		return WarnLevel
+	case zerolog.ErrorLevel:
+		return ErrorLevel
+	case zerolog.FatalLevel:
+		return FatalLevel
+	default:
+		return InfoLevel
+	}
+}
+
+// Level returns the minimum level at which this logger emits events
+// Implements the optional Leveler interface consumed by SlogHandler
+func (l *zerologLogger) Level() Level {
+	return convertZerologLevel(l.zl.GetLevel())
+}
+
+// noopLogger implements Logger by discarding all output; Fatal does not call os.Exit(1)
 type noopLogger struct{}
 
-var _noop Logger = &noopLogger{}
+var _noop Logger = &noopLogger{} //nolint:gochecknoglobals
 
-// Noop returns a Logger that discards all output. Use in tests or when logging is disabled.
-// Fatal does not call os.Exit(1), so it is safe to use in tests without terminating the process.
-// FromContext returns Noop when ctx is nil or when no logger was set via IntoContext.
+// Noop returns a Logger that discards all output. Use in tests or when logging is disabled
+// Fatal does not call os.Exit(1), so it is safe to use in tests without terminating the process
+// FromContext returns Noop when ctx is nil or when no logger was set via IntoContext
 func Noop() Logger {
 	return _noop
 }

@@ -22,7 +22,7 @@ func BenchmarkInfoNoFields(b *testing.B) {
 	l := benchLogger(b, WithLevel(InfoLevel), WithOutput(ConsoleOutput))
 	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		l.Info("benchmark message")
 	}
 }
@@ -32,7 +32,7 @@ func BenchmarkInfoWithFields(b *testing.B) {
 	f := Fields{"key": "value", "count": 42}
 	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		l.Info("benchmark message", f)
 	}
 }
@@ -47,7 +47,7 @@ func BenchmarkSanitizeFields(b *testing.B) {
 	}
 	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		sanitizeFields(f)
 	}
 }

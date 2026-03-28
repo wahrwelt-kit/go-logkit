@@ -30,7 +30,7 @@ func TestNew_FileOutput_EmptyFilename_Error(t *testing.T) {
 	t.Parallel()
 	l, err := New(WithOutput(FileOutput))
 	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrEmptyFilename))
+	require.ErrorIs(t, err, ErrEmptyFilename)
 	require.Nil(t, l)
 }
 
@@ -38,7 +38,7 @@ func TestNew_BothOutput_EmptyFilename_Error(t *testing.T) {
 	t.Parallel()
 	l, err := New(WithOutput(BothOutput))
 	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrEmptyFilename))
+	require.ErrorIs(t, err, ErrEmptyFilename)
 	require.Nil(t, l)
 }
 
@@ -105,7 +105,7 @@ func TestNoop_AllMethods(t *testing.T) {
 func TestZerologLogger_Fatal_WithExitFunc_DoesNotExit(t *testing.T) {
 	t.Parallel()
 	called := false
-	l, err := New(WithLevel(InfoLevel), WithOutput(ConsoleOutput), WithExitFunc(func(code int) {
+	l, err := New(WithLevel(InfoLevel), WithOutput(ConsoleOutput), WithExitFunc(func(_ int) {
 		called = true
 	}))
 	require.NoError(t, err)
