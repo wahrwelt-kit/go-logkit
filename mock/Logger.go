@@ -8,6 +8,7 @@ import (
 	"context"
 
 	mock "github.com/stretchr/testify/mock"
+
 	"github.com/wahrwelt-kit/go-logkit"
 )
 
