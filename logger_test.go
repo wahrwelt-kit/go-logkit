@@ -265,6 +265,26 @@ func TestCaller_InOutput(t *testing.T) {
 	l.Info("caller test")
 	data, err := os.ReadFile(filename)
 	require.NoError(t, err)
-	require.Contains(t, string(data), "caller")
-	require.Contains(t, string(data), "caller test")
+	out := string(data)
+	require.Contains(t, out, "caller test")
+	require.Contains(t, out, "logger_test.go", "caller should point to the test file, not to logger.go inside logkit")
+}
+
+func TestFatal_CallerInOutput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	filename := dir + "/fatal-caller.log"
+	l, err := New(
+		WithLevel(InfoLevel),
+		WithOutput(FileOutput),
+		WithFileOptions(FileOptions{Filename: filename}),
+		WithExitFunc(func(_ int) {}),
+	)
+	require.NoError(t, err)
+	l.Fatal("fatal caller test")
+	data, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	out := string(data)
+	require.Contains(t, out, "fatal caller test")
+	require.Contains(t, out, "logger_test.go", "Fatal caller should point to the test file, not logger.go")
 }

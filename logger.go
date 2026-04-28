@@ -11,9 +11,12 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/diode"
+	"github.com/rs/zerolog/pkgerrors"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -23,6 +26,11 @@ const (
 	defaultMaxBackups = 5
 	defaultMaxAgeDays = 30
 	nilValue          = "<nil>"
+	// callerWrapperFrames accounts for logkit's wrappers between the user call site and zerolog's event.Msg
+	// Stack at Msg time: event.Msg <- logUnchecked <- log <- (Info|Debug|...) <- user code
+	// Default zerolog CallerSkipFrameCount lands on the direct caller of Msg (logUnchecked); add 3 to reach user code
+	// *Context methods inline extractor handling and call log directly, so they share the same depth
+	callerWrapperFrames = 3
 )
 
 // applyFileDefaults fills zero MaxSize, MaxBackups, MaxAge with defaults for lumberjack
@@ -39,25 +47,48 @@ func applyFileDefaults(fo FileOptions) FileOptions {
 	return fo
 }
 
-// loggerState holds closed flag and mutex shared by zerologLogger and its WithFields/WithError children
+// loggerState holds the closed flag and inflight write tracker shared by zerologLogger and its
+// WithFields/WithError children. closed is an atomic.Bool so the hot path log() avoids RWMutex contention;
+// inflight is a sync.WaitGroup that Close uses to wait for in-flight writes to drain before closing the writer
 type loggerState struct {
-	mu     sync.RWMutex
-	closed bool
+	closed   atomic.Bool
+	inflight sync.WaitGroup
 }
 
 // zerologLogger implements Logger using zerolog and optional lumberjack for file output
 type zerologLogger struct {
-	zl        zerolog.Logger
-	closer    io.Closer
-	closeOnce *sync.Once
-	exitOnce  *sync.Once
-	state     *loggerState
-	exitFunc  func(int)
+	zl         zerolog.Logger
+	closer     io.Closer
+	closeOnce  *sync.Once
+	exitOnce   *sync.Once
+	state      *loggerState
+	exitFunc   func(int)
+	extractors []ContextExtractor
+}
+
+// chainCloser closes a sequence of io.Closer values in order, returning the first error encountered
+// Used when both a diode writer and an underlying file writer must be closed: diode first to flush, then file
+type chainCloser struct {
+	closers []io.Closer
+}
+
+func (c *chainCloser) Close() error {
+	var firstErr error
+	for _, cl := range c.closers {
+		if cl == nil {
+			continue
+		}
+		if err := cl.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // New builds a Logger from the given options. Defaults are InfoLevel and ConsoleOutput; nil options are ignored
-// Use WithLevel, WithOutput, WithFileOptions, WithServiceName, and WithExitFunc to configure
-// When Output is FileOutput or BothOutput, FileOptions.Filename must be set; otherwise New returns ErrEmptyFilename
+// Use WithLevel, WithOutput, WithFileOptions, WithServiceName, WithExitFunc, WithHooks, WithSampling,
+// WithStackTrace, WithAsync, WithContextExtractor, WithCallerSkip, WithWriter, and WithSyncWriter to configure
+// When Output is FileOutput or BothOutput and no custom Writer is set, FileOptions.Filename must be non-empty
 // Unknown Level values are treated as InfoLevel. Call Close on the returned logger when done (e.g. defer) to release file output
 func New(opts ...Option) (Logger, error) {
 	o := &Options{
@@ -69,16 +100,71 @@ func New(opts ...Option) (Logger, error) {
 			fn(o)
 		}
 	}
-	if o.Output == FileOutput || o.Output == BothOutput {
+	if o.Writer == nil && (o.Output == FileOutput || o.Output == BothOutput) {
 		if o.FileOptions.Filename == "" {
 			return nil, ErrEmptyFilename
 		}
 	}
-	var output io.Writer
-	var closer io.Closer
+	if o.StackTrace {
+		// reassigning a package-level var in another package is the documented zerolog API for plugging in
+		// a stack marshaler; the variable is declared as a hook (`var ErrorStackMarshaler func(error) interface{}`)
+		// and zerolog itself sets it via the same assignment in its docs and pkgerrors subpackage README
+		zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack //nolint:reassign // documented zerolog plugin point
+	}
+	output, externalCloser := buildOutput(o)
+	// Derive the primary closer: if async is configured, diode wraps the writer and propagates Close
+	// to the underlying writer when it implements io.Closer (FileOutput/custom Writer cases).
+	// Without async, pull the primary closer directly from the writer if it implements io.Closer.
+	// externalCloser (only set for BothOutput) is kept separate because MultiLevelWriter.Close
+	// does not propagate to lumberjack via LevelWriterAdapter.
+	var primaryCloser io.Closer
+	if o.Async != nil {
+		dw := diode.NewWriter(output, o.Async.Size, o.Async.PollInterval, o.Async.OnDrop)
+		output = dw
+		primaryCloser = dw
+	} else if c, ok := output.(io.Closer); ok {
+		primaryCloser = c
+	}
+	zc := zerolog.New(output).With().Timestamp().CallerWithSkipFrameCount(zerolog.CallerSkipFrameCount + callerWrapperFrames + o.CallerSkip)
+	if o.ServiceName != "" {
+		zc = zc.Str("service", o.ServiceName)
+	}
+	zl := zc.Logger().Level(convertLogLevel(o.Level))
+	for _, h := range o.Hooks {
+		zl = zl.Hook(h)
+	}
+	if o.Sampler != nil {
+		zl = zl.Sample(o.Sampler)
+	}
+	exitFunc := o.ExitFunc
+	if exitFunc == nil {
+		exitFunc = os.Exit
+	}
+	closer := buildCloser(primaryCloser, externalCloser)
+	return &zerologLogger{
+		zl:         zl,
+		closer:     closer,
+		closeOnce:  &sync.Once{},
+		exitOnce:   &sync.Once{},
+		state:      &loggerState{},
+		exitFunc:   exitFunc,
+		extractors: o.Extractors,
+	}, nil
+}
+
+// buildOutput returns the base writer and an external closer.
+// The external closer is set only when the writer's own Close does NOT reach the underlying file:
+// this happens for BothOutput where lumberjack sits behind MultiLevelWriter+LevelWriterAdapter
+// (LevelWriterAdapter does not implement io.Closer, so MultiLevelWriter.Close skips the file).
+// For FileOutput and custom Writer, the writer IS the primary closer - the caller derives it
+// from the returned writer directly, so externalCloser is nil for those cases.
+func buildOutput(o *Options) (writer io.Writer, externalCloser io.Closer) {
+	if o.Writer != nil {
+		return o.Writer, nil
+	}
 	switch o.Output {
 	case ConsoleOutput:
-		output = zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}
+		return zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}, nil
 	case FileOutput:
 		fo := applyFileDefaults(o.FileOptions)
 		lj := &lumberjack.Logger{
@@ -88,8 +174,7 @@ func New(opts ...Option) (Logger, error) {
 			MaxAge:     fo.MaxAge,
 			Compress:   fo.Compress,
 		}
-		output = lj
-		closer = lj
+		return lj, nil
 	case BothOutput:
 		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}
 		fo := applyFileDefaults(o.FileOptions)
@@ -100,21 +185,26 @@ func New(opts ...Option) (Logger, error) {
 			MaxAge:     fo.MaxAge,
 			Compress:   fo.Compress,
 		}
-		output = zerolog.MultiLevelWriter(consoleWriter, fileWriter)
-		closer = fileWriter
+		return zerolog.MultiLevelWriter(consoleWriter, fileWriter), fileWriter
 	default:
-		output = os.Stdout
+		return os.Stdout, nil
 	}
-	zc := zerolog.New(output).With().Timestamp().Caller()
-	if o.ServiceName != "" {
-		zc = zc.Str("service", o.ServiceName)
+}
+
+// buildCloser returns a single io.Closer that closes the primary writer first (diode or the writer itself)
+// and then the external closer if one exists (BothOutput file that is not reachable via the writer's Close).
+// Returns nil when nothing needs to be closed
+func buildCloser(primary, external io.Closer) io.Closer {
+	switch {
+	case primary == nil && external == nil:
+		return nil
+	case primary == nil:
+		return external
+	case external == nil:
+		return primary
+	default:
+		return &chainCloser{closers: []io.Closer{primary, external}}
 	}
-	zl := zc.Logger().Level(convertLogLevel(o.Level))
-	exitFunc := o.ExitFunc
-	if exitFunc == nil {
-		exitFunc = os.Exit
-	}
-	return &zerologLogger{zl: zl, closer: closer, closeOnce: &sync.Once{}, exitOnce: &sync.Once{}, state: &loggerState{}, exitFunc: exitFunc}, nil
 }
 
 func (l *zerologLogger) Debug(msg string, fields ...Fields) {
@@ -133,31 +223,64 @@ func (l *zerologLogger) Error(msg string, fields ...Fields) {
 	l.log(l.zl.Error(), msg, fields...) //nolint:zerologlint // event is consumed by l.log which calls Msg internally
 }
 
-func (l *zerologLogger) DebugContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Debug(), msg, fields...) //nolint:zerologlint // event is consumed by l.log which calls Msg internally
+func (l *zerologLogger) DebugContext(ctx context.Context, msg string, fields ...Fields) {
+	l.log(l.zl.Debug(), msg, l.applyExtractors(ctx, fields)...) //nolint:zerologlint // event consumed by l.log
 }
 
-func (l *zerologLogger) InfoContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Info(), msg, fields...) //nolint:zerologlint // event is consumed by l.log which calls Msg internally
+func (l *zerologLogger) InfoContext(ctx context.Context, msg string, fields ...Fields) {
+	l.log(l.zl.Info(), msg, l.applyExtractors(ctx, fields)...) //nolint:zerologlint // event consumed by l.log
 }
 
-func (l *zerologLogger) WarnContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Warn(), msg, fields...) //nolint:zerologlint // event is consumed by l.log which calls Msg internally
+func (l *zerologLogger) WarnContext(ctx context.Context, msg string, fields ...Fields) {
+	l.log(l.zl.Warn(), msg, l.applyExtractors(ctx, fields)...) //nolint:zerologlint // event consumed by l.log
 }
 
-func (l *zerologLogger) ErrorContext(_ context.Context, msg string, fields ...Fields) {
-	l.log(l.zl.Error(), msg, fields...) //nolint:zerologlint // event is consumed by l.log which calls Msg internally
+func (l *zerologLogger) ErrorContext(ctx context.Context, msg string, fields ...Fields) {
+	l.log(l.zl.Error(), msg, l.applyExtractors(ctx, fields)...) //nolint:zerologlint // event consumed by l.log
 }
 
-func (l *zerologLogger) FatalContext(_ context.Context, msg string, fields ...Fields) {
-	l.Fatal(msg, fields...)
+func (l *zerologLogger) FatalContext(ctx context.Context, msg string, fields ...Fields) {
+	l.fatal(msg, l.applyExtractors(ctx, fields))
+}
+
+// applyExtractors prepends extracted Fields to the given fields slice; later entries override earlier ones in logUnchecked
+// Returns the original slice unchanged when no extractors are configured or all return empty Fields
+func (l *zerologLogger) applyExtractors(ctx context.Context, fields []Fields) []Fields {
+	if len(l.extractors) == 0 || ctx == nil {
+		return fields
+	}
+	var extracted []Fields
+	for _, ex := range l.extractors {
+		if ex == nil {
+			continue
+		}
+		f := ex(ctx)
+		if len(f) == 0 {
+			continue
+		}
+		extracted = append(extracted, f)
+	}
+	if len(extracted) == 0 {
+		return fields
+	}
+	out := make([]Fields, 0, len(extracted)+len(fields))
+	out = append(out, extracted...)
+	out = append(out, fields...)
+	return out
 }
 
 func (l *zerologLogger) Fatal(msg string, fields ...Fields) {
-	l.state.mu.Lock()
-	l.state.closed = true
+	l.fatal(msg, fields)
+}
+
+// fatal is the shared implementation for Fatal and FatalContext; it adds a consistent wrapper frame
+// so both public methods sit at the same call depth as Info/Debug/etc. (3 frames from logUnchecked)
+func (l *zerologLogger) fatal(msg string, fields []Fields) {
+	// Mark closed so concurrent log() calls drop new events; then drain in-flight writes before
+	// emitting the fatal record so it lands after the last live event in chronological order
+	l.state.closed.Store(true)
+	l.state.inflight.Wait()
 	l.logUnchecked(l.zl.WithLevel(zerolog.FatalLevel), msg, fields...)
-	l.state.mu.Unlock()
 	if err := l.Close(); err != nil {
 		_, _ = os.Stderr.WriteString("logger close: " + err.Error() + "\n")
 	}
@@ -168,14 +291,56 @@ func (l *zerologLogger) WithFields(fields Fields) Logger {
 	s := sanitizeFields(fields)
 	m := make(map[string]any, len(s))
 	maps.Copy(m, s)
-	return &zerologLogger{zl: l.zl.With().Fields(m).Logger(), closer: l.closer, closeOnce: l.closeOnce, exitOnce: l.exitOnce, state: l.state, exitFunc: l.exitFunc}
+	return &zerologLogger{
+		zl:         l.zl.With().Fields(m).Logger(),
+		closer:     l.closer,
+		closeOnce:  l.closeOnce,
+		exitOnce:   l.exitOnce,
+		state:      l.state,
+		exitFunc:   l.exitFunc,
+		extractors: l.extractors,
+	}
 }
 
+// WithError returns a child logger with err attached as the "error" field on every event
+// When WithStackTrace was passed to New and err implements StackTrace (e.g. via pkg/errors), a "stack" field
+// is also added on every event from the child logger; otherwise only the "error" field is added
+//
+// Implementation note: this avoids zerolog.Context.Err which has an early-return bug in v1.35.x when the
+// global ErrorStackMarshaler is set and the error does not implement StackTrace - the error field would be
+// dropped silently. We add the error field directly via Str and emit the stack via the global marshaler ourselves
 func (l *zerologLogger) WithError(err error) Logger {
 	if isNilInterface(err) {
-		return &zerologLogger{zl: l.zl.With().Logger(), closer: l.closer, closeOnce: l.closeOnce, exitOnce: l.exitOnce, state: l.state, exitFunc: l.exitFunc}
+		return &zerologLogger{
+			zl:         l.zl.With().Logger(),
+			closer:     l.closer,
+			closeOnce:  l.closeOnce,
+			exitOnce:   l.exitOnce,
+			state:      l.state,
+			exitFunc:   l.exitFunc,
+			extractors: l.extractors,
+		}
 	}
-	return &zerologLogger{zl: l.zl.With().Str("error", sanitizeMsg(err.Error())).Logger(), closer: l.closer, closeOnce: l.closeOnce, exitOnce: l.exitOnce, state: l.state, exitFunc: l.exitFunc}
+	zc := l.zl.With().Str(zerolog.ErrorFieldName, sanitizeMsg(err.Error()))
+	if zerolog.ErrorStackMarshaler != nil {
+		if stack := zerolog.ErrorStackMarshaler(err); stack != nil {
+			switch v := stack.(type) {
+			case string:
+				zc = zc.Str(zerolog.ErrorStackFieldName, v)
+			default:
+				zc = zc.Interface(zerolog.ErrorStackFieldName, v)
+			}
+		}
+	}
+	return &zerologLogger{
+		zl:         zc.Logger(),
+		closer:     l.closer,
+		closeOnce:  l.closeOnce,
+		exitOnce:   l.exitOnce,
+		state:      l.state,
+		exitFunc:   l.exitFunc,
+		extractors: l.extractors,
+	}
 }
 
 func (l *zerologLogger) Close() error {
@@ -184,10 +349,10 @@ func (l *zerologLogger) Close() error {
 	}
 	var err error
 	l.closeOnce.Do(func() {
-		l.state.mu.Lock()
-		l.state.closed = true
+		l.state.closed.Store(true)
+		// Wait for in-flight log() calls to release the writer before we close it
+		l.state.inflight.Wait()
 		err = l.closer.Close()
-		l.state.mu.Unlock()
 	})
 	return err
 }
@@ -264,11 +429,16 @@ func sanitizeFields(in Fields) Fields {
 	return out
 }
 
-// log checks closed under RLock and skips write if already closed; otherwise delegates to logUnchecked
+// log is the lock-free hot path: an atomic check followed by a WaitGroup register so Close can drain
+// in-flight writes before closing the writer. The double-check after Add covers the race where Close
+// observed counter==0 and proceeded to close the writer between the first Load and the Add
 func (l *zerologLogger) log(event *zerolog.Event, msg string, fields ...Fields) {
-	l.state.mu.RLock()
-	defer l.state.mu.RUnlock()
-	if l.state.closed {
+	if l.state.closed.Load() {
+		return
+	}
+	l.state.inflight.Add(1)
+	defer l.state.inflight.Done()
+	if l.state.closed.Load() {
 		return
 	}
 	l.logUnchecked(event, msg, fields...)
