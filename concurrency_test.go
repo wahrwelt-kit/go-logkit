@@ -344,3 +344,42 @@ func TestWithWriter_NilIgnored(t *testing.T) {
 	l.Info("nil ignored")
 	require.Contains(t, buf.String(), "nil ignored", "nil WithWriter should not clear a previously set writer")
 }
+
+// TestClose_DoesNotCloseStdout guards a regression where logger.Close would close os.Stdout
+// because zerolog.ConsoleWriter (and *os.File for the default branch) both implement io.Closer
+// in zerolog v1.35.x; auto-detecting io.Closer on the writer reached stdout and broke any
+// subsequent stdout writes from the test binary (cover report, fmt.Println, etc.).
+// We swap os.Stdout with a temp file so the test stays hermetic and can assert the FD survives Close.
+func TestClose_DoesNotCloseStdout(t *testing.T) {
+	// Reassigning os.Stdout is the only way to assert the underlying FD survives logger.Close;
+	// the test is serial (no t.Parallel) and restores the original value via t.Cleanup
+	original := os.Stdout
+	t.Cleanup(func() { os.Stdout = original }) //nolint:reassign // test-only swap, restored on cleanup
+	tmp, err := os.CreateTemp(t.TempDir(), "stdout-*.log")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tmp.Close() })
+	os.Stdout = tmp //nolint:reassign // test-only swap, restored on cleanup
+
+	cases := []struct {
+		name string
+		opts []Option
+	}{
+		{"console", []Option{WithLevel(InfoLevel), WithOutput(ConsoleOutput)}},
+		{"console-with-fatal", []Option{WithLevel(InfoLevel), WithOutput(ConsoleOutput), WithExitFunc(func(_ int) {})}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, err := New(tc.opts...)
+			require.NoError(t, err)
+			l.Info("event")
+			if tc.name == "console-with-fatal" {
+				l.Fatal("fatal")
+			} else {
+				require.NoError(t, l.Close())
+			}
+			// If Close reached os.Stdout, this Write would fail with "file already closed"
+			_, writeErr := os.Stdout.WriteString("stdout still open\n")
+			require.NoError(t, writeErr, "logger.Close must not close os.Stdout")
+		})
+	}
+}

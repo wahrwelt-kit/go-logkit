@@ -111,19 +111,23 @@ func New(opts ...Option) (Logger, error) {
 		// and zerolog itself sets it via the same assignment in its docs and pkgerrors subpackage README
 		zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack //nolint:reassign // documented zerolog plugin point
 	}
-	output, externalCloser := buildOutput(o)
-	// Derive the primary closer: if async is configured, diode wraps the writer and propagates Close
-	// to the underlying writer when it implements io.Closer (FileOutput/custom Writer cases).
-	// Without async, pull the primary closer directly from the writer if it implements io.Closer.
-	// externalCloser (only set for BothOutput) is kept separate because MultiLevelWriter.Close
-	// does not propagate to lumberjack via LevelWriterAdapter.
-	var primaryCloser io.Closer
+	output, primaryCloser, externalCloser := buildOutput(o)
+	// When async is configured, wrap the output in a diode. The diode's Close flushes pending events
+	// and then calls Close on the wrapped writer when it implements io.Closer. To prevent diode from
+	// reaching stdout-backed writers (zerolog.ConsoleWriter and *os.File both implement io.Closer in
+	// v1.35.x and would close os.Stdout), strip Close on the wrapped writer when primaryCloser is nil.
+	// For owned resources (FileOutput, custom Closer writer) we keep Close so diode flushes-then-closes
+	// the resource exactly once; primaryCloser is then the diode itself.
 	if o.Async != nil {
-		dw := diode.NewWriter(output, o.Async.Size, o.Async.PollInterval, o.Async.OnDrop)
+		base := output
+		if primaryCloser == nil {
+			if _, ok := base.(io.Closer); ok {
+				base = noCloseWriter{w: base}
+			}
+		}
+		dw := diode.NewWriter(base, o.Async.Size, o.Async.PollInterval, o.Async.OnDrop)
 		output = dw
 		primaryCloser = dw
-	} else if c, ok := output.(io.Closer); ok {
-		primaryCloser = c
 	}
 	zc := zerolog.New(output).With().Timestamp().CallerWithSkipFrameCount(zerolog.CallerSkipFrameCount + callerWrapperFrames + o.CallerSkip)
 	if o.ServiceName != "" {
@@ -152,19 +156,25 @@ func New(opts ...Option) (Logger, error) {
 	}, nil
 }
 
-// buildOutput returns the base writer and an external closer.
-// The external closer is set only when the writer's own Close does NOT reach the underlying file:
-// this happens for BothOutput where lumberjack sits behind MultiLevelWriter+LevelWriterAdapter
-// (LevelWriterAdapter does not implement io.Closer, so MultiLevelWriter.Close skips the file).
-// For FileOutput and custom Writer, the writer IS the primary closer - the caller derives it
-// from the returned writer directly, so externalCloser is nil for those cases.
-func buildOutput(o *Options) (writer io.Writer, externalCloser io.Closer) {
+// buildOutput returns the base writer along with the primary and external closers (either may be nil).
+// primaryCloser is the closer the logger owns directly: lumberjack file (FileOutput) or a custom writer
+// that implements io.Closer (WithWriter). It is intentionally nil for stdout-backed writers because
+// closing os.Stdout would break the test runner and any subsequent program output - zerolog.ConsoleWriter
+// and *os.File both implement io.Closer in v1.35.x and would otherwise be picked up incorrectly.
+// externalCloser is set only for BothOutput, where the lumberjack file sits inside MultiLevelWriter
+// alongside ConsoleWriter; we cannot use MultiLevelWriter.Close because it would also close stdout via
+// ConsoleWriter, so the file writer is returned separately and chained into the close sequence directly.
+func buildOutput(o *Options) (writer io.Writer, primaryCloser, externalCloser io.Closer) {
 	if o.Writer != nil {
-		return o.Writer, nil
+		var pc io.Closer
+		if c, ok := o.Writer.(io.Closer); ok {
+			pc = c
+		}
+		return o.Writer, pc, nil
 	}
 	switch o.Output {
 	case ConsoleOutput:
-		return zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}, nil
+		return zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}, nil, nil
 	case FileOutput:
 		fo := applyFileDefaults(o.FileOptions)
 		lj := &lumberjack.Logger{
@@ -174,7 +184,7 @@ func buildOutput(o *Options) (writer io.Writer, externalCloser io.Closer) {
 			MaxAge:     fo.MaxAge,
 			Compress:   fo.Compress,
 		}
-		return lj, nil
+		return lj, lj, nil
 	case BothOutput:
 		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}
 		fo := applyFileDefaults(o.FileOptions)
@@ -185,11 +195,21 @@ func buildOutput(o *Options) (writer io.Writer, externalCloser io.Closer) {
 			MaxAge:     fo.MaxAge,
 			Compress:   fo.Compress,
 		}
-		return zerolog.MultiLevelWriter(consoleWriter, fileWriter), fileWriter
+		return zerolog.MultiLevelWriter(consoleWriter, fileWriter), nil, fileWriter
 	default:
-		return os.Stdout, nil
+		return os.Stdout, nil, nil
 	}
 }
+
+// noCloseWriter wraps an io.Writer to hide any Close method on the underlying writer
+// Used when wrapping an stdout-backed writer (zerolog.ConsoleWriter, *os.File) in the diode async writer:
+// diode.Close calls Close on the wrapped writer when it implements io.Closer, which would otherwise
+// reach os.Stdout and break the test runner and any subsequent program output
+type noCloseWriter struct {
+	w io.Writer
+}
+
+func (n noCloseWriter) Write(p []byte) (int, error) { return n.w.Write(p) }
 
 // buildCloser returns a single io.Closer that closes the primary writer first (diode or the writer itself)
 // and then the external closer if one exists (BothOutput file that is not reachable via the writer's Close).
