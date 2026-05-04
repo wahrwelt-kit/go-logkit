@@ -80,12 +80,12 @@ func TestWithContextExtractor_UserFieldsOverrideExtracted(t *testing.T) {
 		WithOutput(FileOutput),
 		WithFileOptions(FileOptions{Filename: filename}),
 		WithContextExtractor(func(_ context.Context) Fields {
-			return Fields{"trace_id": "from-extractor", "service": "extracted"}
+			return Fields{keyTraceID: "from-extractor", "service": "extracted"}
 		}),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
-	l.InfoContext(context.Background(), "msg", Fields{"trace_id": "from-user"})
+	l.InfoContext(context.Background(), "msg", Fields{keyTraceID: "from-user"})
 	require.NoError(t, l.Close())
 	data, err := os.ReadFile(filename)
 	require.NoError(t, err)
@@ -317,7 +317,7 @@ func TestFatalContext_AppliesExtractor(t *testing.T) {
 		WithExitFunc(func(_ int) {}),
 		WithContextExtractor(func(ctx context.Context) Fields {
 			if v, ok := ctx.Value(keyTrace).(string); ok {
-				return Fields{"trace_id": v}
+				return Fields{keyTraceID: v}
 			}
 			return nil
 		}),

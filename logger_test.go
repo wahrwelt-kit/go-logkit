@@ -146,18 +146,19 @@ func TestZerologLogger_Log_MergesMultipleFields(t *testing.T) {
 
 func TestSanitizeMsg(t *testing.T) {
 	t.Parallel()
+	const helloWorld = "hello world"
 	tests := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{"newline", "hello\nworld", "hello world"},
-		{"carriage return", "hello\rworld", "hello world"},
-		{"null byte", "hello\x00world", "hello world"},
-		{"unicode line sep", "hello\u2028world", "hello world"},
-		{"unicode para sep", "hello\u2029world", "hello world"},
-		{"tabs", "hello\tworld", "hello world"},
-		{"clean", "hello world", "hello world"},
+		{"newline", "hello\nworld", helloWorld},
+		{"carriage return", "hello\rworld", helloWorld},
+		{"null byte", "hello\x00world", helloWorld},
+		{"unicode line sep", "hello\u2028world", helloWorld},
+		{"unicode para sep", "hello\u2029world", helloWorld},
+		{"tabs", "hello\tworld", helloWorld},
+		{"clean", helloWorld, helloWorld},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -177,7 +178,7 @@ func TestSanitizeFields(t *testing.T) {
 	}{
 		{"string", Fields{"s": "a\nb"}},
 		{"int", Fields{"n": 42}},
-		{"error", Fields{"err": err}},
+		{keyError, Fields{"err": err}},
 		{"stringer", Fields{"d": time.Second}},
 	}
 	for _, tt := range tests {

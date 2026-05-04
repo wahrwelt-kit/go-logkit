@@ -44,7 +44,7 @@ func BenchmarkSanitizeFields(b *testing.B) {
 		"string":   "hello\nworld",
 		"int":      42,
 		"float":    3.14,
-		"error":    errors.New("test\nerror"),
+		keyError:   errors.New("test\nerror"),
 		"stringer": time.Second,
 	}
 	b.ResetTimer()

@@ -74,7 +74,7 @@ func TestSlogHandler_LevelMapping(t *testing.T) {
 		wantLvl string
 	}{
 		{"warn", func(sl *slog.Logger) { sl.Warn("msg") }, `"level":"warn"`},
-		{"error", func(sl *slog.Logger) { sl.Error("msg") }, `"level":"error"`},
+		{keyError, func(sl *slog.Logger) { sl.Error("msg") }, `"level":"error"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
