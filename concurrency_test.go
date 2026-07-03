@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -218,6 +219,92 @@ func TestClose_WaitsForInflight(t *testing.T) {
 	require.NoError(t, err)
 	got := strings.Count(string(data), "inflight")
 	require.Equal(t, goroutines*perGoroutine, got)
+}
+
+type blockingWriter struct {
+	started chan struct{}
+	release chan struct{}
+
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func newBlockingWriter() *blockingWriter {
+	return &blockingWriter{
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	select {
+	case w.started <- struct{}{}:
+	default:
+	}
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *blockingWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func TestClose_RacesWithActiveLogStarts(t *testing.T) {
+	t.Parallel()
+	writer := newBlockingWriter()
+	l, err := New(WithWriter(writer))
+	require.NoError(t, err)
+
+	firstWriteDone := make(chan struct{})
+	go func() {
+		l.Info("blocked")
+		close(firstWriteDone)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial write did not start")
+	}
+
+	const goroutines = 100
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			<-start
+			l.Info("racing")
+		}()
+	}
+
+	closeErr := make(chan error, 1)
+	go func() {
+		close(start)
+		closeErr <- l.Close()
+	}()
+
+	select {
+	case err := <-closeErr:
+		require.NoError(t, err)
+		t.Fatal("Close returned before in-flight write was released")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(writer.release)
+	require.NoError(t, <-closeErr)
+	wg.Wait()
+	<-firstWriteDone
+
+	l.Info("after close")
+	out := writer.String()
+	require.Contains(t, out, "blocked")
+	require.NotContains(t, out, "after close")
 }
 
 func TestWithCallerSkip_AdjustsCallerFrame(t *testing.T) {

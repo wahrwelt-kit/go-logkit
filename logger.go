@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,11 +27,12 @@ const (
 	defaultMaxBackups = 5
 	defaultMaxAgeDays = 30
 	nilValue          = "<nil>"
-	// callerWrapperFrames accounts for logkit's wrappers between the user call site and zerolog's event.Msg
-	// Stack at Msg time: event.Msg <- logUnchecked <- log <- (Info|Debug|...) <- user code
-	// Default zerolog CallerSkipFrameCount lands on the direct caller of Msg (logUnchecked); add 3 to reach user code
-	// *Context methods inline extractor handling and call log directly, so they share the same depth
+	redactedValue     = "[REDACTED]"
+	// callerWrapperFrames accounts for runtime.Caller -> callerFromSkip -> log -> public method -> user code.
+	// *Context methods inline extractor handling and call log directly, so they share the same depth.
 	callerWrapperFrames = 3
+	// fatalOnceCallerFrames includes the sync.Once frame used to guarantee a single fatal event.
+	fatalOnceCallerFrames = 6
 )
 
 // applyFileDefaults fills zero MaxSize, MaxBackups, MaxAge with defaults for lumberjack
@@ -47,12 +49,55 @@ func applyFileDefaults(fo FileOptions) FileOptions {
 	return fo
 }
 
-// loggerState holds the closed flag and inflight write tracker shared by zerologLogger and its
-// WithFields/WithError children. closed is an atomic.Bool so the hot path log() avoids RWMutex contention;
-// inflight is a sync.WaitGroup that Close uses to wait for in-flight writes to drain before closing the writer
+// loggerState is shared by zerologLogger and its WithFields/WithError children.
+// begin/end form an explicit write gate so Close/Fatal can stop new events and wait
+// for in-flight writes without misusing sync.WaitGroup as a concurrent register/drain primitive.
 type loggerState struct {
-	closed   atomic.Bool
-	inflight sync.WaitGroup
+	closed atomic.Bool
+
+	mu       sync.Mutex
+	cond     *sync.Cond
+	inflight int
+
+	shutdownMu   sync.Mutex
+	outputClosed bool
+}
+
+func newLoggerState() *loggerState {
+	s := &loggerState{}
+	s.cond = sync.NewCond(&s.mu)
+	return s
+}
+
+func (s *loggerState) begin() bool {
+	if s.closed.Load() {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return false
+	}
+	s.inflight++
+	return true
+}
+
+func (s *loggerState) end() {
+	s.mu.Lock()
+	s.inflight--
+	if s.inflight == 0 {
+		s.cond.Broadcast()
+	}
+	s.mu.Unlock()
+}
+
+func (s *loggerState) closeAndWait() {
+	s.closed.Store(true)
+	s.mu.Lock()
+	for s.inflight > 0 {
+		s.cond.Wait()
+	}
+	s.mu.Unlock()
 }
 
 // zerologLogger implements Logger using zerolog and optional lumberjack for file output
@@ -60,10 +105,14 @@ type zerologLogger struct {
 	zl         zerolog.Logger
 	closer     io.Closer
 	closeOnce  *sync.Once
-	exitOnce   *sync.Once
+	fatalOnce  *sync.Once
 	state      *loggerState
 	exitFunc   func(int)
 	extractors []ContextExtractor
+	stackTrace bool
+	redaction  *redactionConfig
+	callerSkip int
+	fatalSkip  int
 }
 
 // chainCloser closes a sequence of io.Closer values in order, returning the first error encountered
@@ -85,11 +134,11 @@ func (c *chainCloser) Close() error {
 	return firstErr
 }
 
-// New builds a Logger from the given options. Defaults are InfoLevel and ConsoleOutput; nil options are ignored
+// New builds a Logger from the given options. Defaults are InfoLevel and JSON stdout; nil options are ignored
 // Use WithLevel, WithOutput, WithFileOptions, WithServiceName, WithExitFunc, WithHooks, WithSampling,
 // WithStackTrace, WithAsync, WithContextExtractor, WithCallerSkip, WithWriter, and WithSyncWriter to configure
 // When Output is FileOutput or BothOutput and no custom Writer is set, FileOptions.Filename must be non-empty
-// Unknown Level values are treated as InfoLevel. Call Close on the returned logger when done (e.g. defer) to release file output
+// Unknown Level values are treated as InfoLevel. Call Close on the returned logger when done (e.g. defer) to release output
 func New(opts ...Option) (Logger, error) {
 	o := &Options{
 		Level:  InfoLevel,
@@ -100,36 +149,12 @@ func New(opts ...Option) (Logger, error) {
 			fn(o)
 		}
 	}
-	if o.Writer == nil && (o.Output == FileOutput || o.Output == BothOutput) {
-		if o.FileOptions.Filename == "" {
-			return nil, ErrEmptyFilename
-		}
-	}
-	if o.StackTrace {
-		// reassigning a package-level var in another package is the documented zerolog API for plugging in
-		// a stack marshaler; the variable is declared as a hook (`var ErrorStackMarshaler func(error) interface{}`)
-		// and zerolog itself sets it via the same assignment in its docs and pkgerrors subpackage README
-		zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack //nolint:reassign // documented zerolog plugin point
+	if err := validateOptions(o); err != nil {
+		return nil, err
 	}
 	output, primaryCloser, externalCloser := buildOutput(o)
-	// When async is configured, wrap the output in a diode. The diode's Close flushes pending events
-	// and then calls Close on the wrapped writer when it implements io.Closer. To prevent diode from
-	// reaching stdout-backed writers (zerolog.ConsoleWriter and *os.File both implement io.Closer in
-	// v1.35.x and would close os.Stdout), strip Close on the wrapped writer when primaryCloser is nil.
-	// For owned resources (FileOutput, custom Closer writer) we keep Close so diode flushes-then-closes
-	// the resource exactly once; primaryCloser is then the diode itself.
-	if o.Async != nil {
-		base := output
-		if primaryCloser == nil {
-			if _, ok := base.(io.Closer); ok {
-				base = noCloseWriter{w: base}
-			}
-		}
-		dw := diode.NewWriter(base, o.Async.Size, o.Async.PollInterval, o.Async.OnDrop)
-		output = dw
-		primaryCloser = dw
-	}
-	zc := zerolog.New(output).With().Timestamp().CallerWithSkipFrameCount(zerolog.CallerSkipFrameCount + callerWrapperFrames + o.CallerSkip)
+	output, primaryCloser = wrapAsyncOutput(output, primaryCloser, o.Async)
+	zc := zerolog.New(output).With().Timestamp()
 	if o.ServiceName != "" {
 		zc = zc.Str("service", o.ServiceName)
 	}
@@ -145,15 +170,54 @@ func New(opts ...Option) (Logger, error) {
 		exitFunc = os.Exit
 	}
 	closer := buildCloser(primaryCloser, externalCloser)
+	redaction := newRedactionConfig(o.SensitiveKeys, o.Redactors)
 	return &zerologLogger{
 		zl:         zl,
 		closer:     closer,
 		closeOnce:  &sync.Once{},
-		exitOnce:   &sync.Once{},
-		state:      &loggerState{},
+		fatalOnce:  &sync.Once{},
+		state:      newLoggerState(),
 		exitFunc:   exitFunc,
 		extractors: o.Extractors,
+		stackTrace: o.StackTrace,
+		redaction:  redaction,
+		callerSkip: callerWrapperFrames + o.CallerSkip,
+		fatalSkip:  fatalOnceCallerFrames + o.CallerSkip,
 	}, nil
+}
+
+func validateOptions(o *Options) error {
+	if o.Writer == nil && (o.Output == FileOutput || o.Output == BothOutput) {
+		if o.FileOptions.Filename == "" {
+			return ErrEmptyFilename
+		}
+	}
+	if o.Async != nil {
+		if o.Async.Size <= 0 || o.Async.PollInterval < 0 {
+			return ErrInvalidAsyncOptions
+		}
+	}
+	return nil
+}
+
+func wrapAsyncOutput(output io.Writer, primaryCloser io.Closer, ao *AsyncOptions) (io.Writer, io.Closer) {
+	if ao == nil {
+		return output, primaryCloser
+	}
+	// When async is configured, wrap the output in a diode. The diode's Close flushes pending events
+	// and then calls Close on the wrapped writer when it implements io.Closer. To prevent diode from
+	// reaching stdout-backed writers (zerolog.ConsoleWriter and *os.File both implement io.Closer in
+	// v1.35.x and would close os.Stdout), strip Close on the wrapped writer when primaryCloser is nil.
+	// For owned resources (FileOutput, custom Closer writer) we keep Close so diode flushes-then-closes
+	// the resource exactly once; primaryCloser is then the diode itself.
+	base := output
+	if primaryCloser == nil {
+		if _, ok := base.(io.Closer); ok {
+			base = noCloseWriter{w: base}
+		}
+	}
+	dw := diode.NewWriter(base, ao.Size, ao.PollInterval, ao.OnDrop)
+	return dw, dw
 }
 
 // buildOutput returns the base writer along with the primary and external closers (either may be nil).
@@ -172,8 +236,11 @@ func buildOutput(o *Options) (writer io.Writer, primaryCloser, externalCloser io
 		}
 		return o.Writer, pc, nil
 	}
+	if o.Output == ConsoleOutput {
+		return os.Stdout, nil, nil
+	}
 	switch o.Output {
-	case ConsoleOutput:
+	case PrettyConsoleOutput:
 		return zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}, nil, nil
 	case FileOutput:
 		fo := applyFileDefaults(o.FileOptions)
@@ -186,7 +253,6 @@ func buildOutput(o *Options) (writer io.Writer, primaryCloser, externalCloser io
 		}
 		return lj, lj, nil
 	case BothOutput:
-		consoleWriter := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: timeFormat}
 		fo := applyFileDefaults(o.FileOptions)
 		fileWriter := &lumberjack.Logger{
 			Filename:   fo.Filename,
@@ -195,7 +261,7 @@ func buildOutput(o *Options) (writer io.Writer, primaryCloser, externalCloser io
 			MaxAge:     fo.MaxAge,
 			Compress:   fo.Compress,
 		}
-		return zerolog.MultiLevelWriter(consoleWriter, fileWriter), nil, fileWriter
+		return zerolog.MultiLevelWriter(os.Stdout, fileWriter), nil, fileWriter
 	default:
 		return os.Stdout, nil, nil
 	}
@@ -294,31 +360,39 @@ func (l *zerologLogger) Fatal(msg string, fields ...Fields) {
 }
 
 // fatal is the shared implementation for Fatal and FatalContext; it adds a consistent wrapper frame
-// so both public methods sit at the same call depth as Info/Debug/etc. (3 frames from logUnchecked)
+// so both public methods point the caller field at the user call site.
 func (l *zerologLogger) fatal(msg string, fields []Fields) {
-	// Mark closed so concurrent log() calls drop new events; then drain in-flight writes before
-	// emitting the fatal record so it lands after the last live event in chronological order
-	l.state.closed.Store(true)
-	l.state.inflight.Wait()
-	l.logUnchecked(l.zl.WithLevel(zerolog.FatalLevel), msg, fields...)
-	if err := l.Close(); err != nil {
-		_, _ = os.Stderr.WriteString("logger close: " + err.Error() + "\n")
-	}
-	l.exitOnce.Do(func() { l.exitFunc(1) })
+	l.fatalOnce.Do(func() {
+		l.state.shutdownMu.Lock()
+		defer l.state.shutdownMu.Unlock()
+		l.state.closeAndWait()
+		if !l.state.outputClosed {
+			event := l.zl.WithLevel(zerolog.FatalLevel)
+			l.logUncheckedWithCaller(event, msg, callerFromSkip(l.fatalSkip), fields...)
+		}
+		if err := l.closeOutputLocked(); err != nil {
+			_, _ = os.Stderr.WriteString("logger close: " + err.Error() + "\n")
+		}
+		l.exitFunc(1)
+	})
 }
 
 func (l *zerologLogger) WithFields(fields Fields) Logger {
-	s := sanitizeFields(fields)
+	s := l.redaction.sanitizeFields(fields)
 	m := make(map[string]any, len(s))
 	maps.Copy(m, s)
 	return &zerologLogger{
 		zl:         l.zl.With().Fields(m).Logger(),
 		closer:     l.closer,
 		closeOnce:  l.closeOnce,
-		exitOnce:   l.exitOnce,
+		fatalOnce:  l.fatalOnce,
 		state:      l.state,
 		exitFunc:   l.exitFunc,
 		extractors: l.extractors,
+		stackTrace: l.stackTrace,
+		redaction:  l.redaction,
+		callerSkip: l.callerSkip,
+		fatalSkip:  l.fatalSkip,
 	}
 }
 
@@ -326,24 +400,27 @@ func (l *zerologLogger) WithFields(fields Fields) Logger {
 // When WithStackTrace was passed to New and err implements StackTrace (e.g. via pkg/errors), a "stack" field
 // is also added on every event from the child logger; otherwise only the "error" field is added
 //
-// Implementation note: this avoids zerolog.Context.Err which has an early-return bug in v1.35.x when the
-// global ErrorStackMarshaler is set and the error does not implement StackTrace - the error field would be
-// dropped silently. We add the error field directly via Str and emit the stack via the global marshaler ourselves
+// Implementation note: this avoids zerolog.Context.Err edge cases by adding the error field directly via Str.
+// When stack traces are enabled for this logger, pkgerrors.MarshalStack is called without mutating global zerolog state.
 func (l *zerologLogger) WithError(err error) Logger {
 	if isNilInterface(err) {
 		return &zerologLogger{
 			zl:         l.zl.With().Logger(),
 			closer:     l.closer,
 			closeOnce:  l.closeOnce,
-			exitOnce:   l.exitOnce,
+			fatalOnce:  l.fatalOnce,
 			state:      l.state,
 			exitFunc:   l.exitFunc,
 			extractors: l.extractors,
+			stackTrace: l.stackTrace,
+			redaction:  l.redaction,
+			callerSkip: l.callerSkip,
+			fatalSkip:  l.fatalSkip,
 		}
 	}
 	zc := l.zl.With().Str(zerolog.ErrorFieldName, sanitizeMsg(err.Error()))
-	if zerolog.ErrorStackMarshaler != nil {
-		if stack := zerolog.ErrorStackMarshaler(err); stack != nil {
+	if l.stackTrace {
+		if stack := pkgerrors.MarshalStack(err); stack != nil {
 			switch v := stack.(type) {
 			case string:
 				zc = zc.Str(zerolog.ErrorStackFieldName, v)
@@ -356,25 +433,40 @@ func (l *zerologLogger) WithError(err error) Logger {
 		zl:         zc.Logger(),
 		closer:     l.closer,
 		closeOnce:  l.closeOnce,
-		exitOnce:   l.exitOnce,
+		fatalOnce:  l.fatalOnce,
 		state:      l.state,
 		exitFunc:   l.exitFunc,
 		extractors: l.extractors,
+		stackTrace: l.stackTrace,
+		redaction:  l.redaction,
+		callerSkip: l.callerSkip,
+		fatalSkip:  l.fatalSkip,
 	}
 }
 
 func (l *zerologLogger) Close() error {
-	if l.closer == nil || l.closeOnce == nil {
+	if l.closeOnce == nil {
 		return nil
 	}
 	var err error
 	l.closeOnce.Do(func() {
-		l.state.closed.Store(true)
-		// Wait for in-flight log() calls to release the writer before we close it
-		l.state.inflight.Wait()
-		err = l.closer.Close()
+		l.state.shutdownMu.Lock()
+		defer l.state.shutdownMu.Unlock()
+		l.state.closeAndWait()
+		err = l.closeOutputLocked()
 	})
 	return err
+}
+
+func (l *zerologLogger) closeOutputLocked() error {
+	if l.state.outputClosed {
+		return nil
+	}
+	l.state.outputClosed = true
+	if l.closer == nil {
+		return nil
+	}
+	return l.closer.Close()
 }
 
 // sanitizeMsg replaces control characters (including \r, \n) and Unicode line/paragraph separators (U+2028, U+2029) with space to reduce log injection
@@ -399,74 +491,253 @@ func isNilInterface(v any) bool {
 	return false
 }
 
+var defaultRedaction = newRedactionConfig(nil, nil) //nolint:gochecknoglobals // immutable package default
+
+var defaultSensitiveKeys = []string{ //nolint:gochecknoglobals // immutable package default
+	keyAuthorization,
+	keyProxyAuthorization,
+	keyCookie,
+	keySetCookie,
+	keyPassword,
+	"passwd",
+	"token",
+	keySecret,
+	keyAPIKey,
+	keyAccessToken,
+	"refresh_token",
+	"id_token",
+	"session_id",
+	"csrf",
+	"csrf_token",
+	"xsrf",
+	"xsrf_token",
+	keyPrivateKey,
+}
+
+type redactionConfig struct {
+	sensitiveKeys map[string]struct{}
+	redactors     []FieldRedactor
+}
+
+func newRedactionConfig(extraKeys []string, redactors []FieldRedactor) *redactionConfig {
+	keys := make(map[string]struct{}, len(defaultSensitiveKeys)+len(extraKeys))
+	for _, key := range defaultSensitiveKeys {
+		addSensitiveKey(keys, key)
+	}
+	for _, key := range extraKeys {
+		addSensitiveKey(keys, key)
+	}
+	cfg := &redactionConfig{sensitiveKeys: keys}
+	for _, redactor := range redactors {
+		if redactor != nil {
+			cfg.redactors = append(cfg.redactors, redactor)
+		}
+	}
+	return cfg
+}
+
+func addSensitiveKey(keys map[string]struct{}, key string) {
+	normalized := normalizeSensitiveKey(key)
+	if normalized != "" {
+		keys[normalized] = struct{}{}
+	}
+}
+
 func sanitizeFields(in Fields) Fields {
+	return defaultRedaction.sanitizeFields(in)
+}
+
+func (c *redactionConfig) sanitizeFields(in Fields) Fields {
+	if c == nil {
+		c = defaultRedaction
+	}
 	out := make(Fields, len(in))
 	for k, v := range in {
 		key := sanitizeMsg(k)
-		switch val := v.(type) {
-		case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr, float32, float64:
-			out[key] = val
-		case string:
-			out[key] = sanitizeMsg(val)
-		case error:
-			if isNilInterface(val) {
-				out[key] = nilValue
-			} else {
-				out[key] = sanitizeMsg(val.Error())
-			}
-		case fmt.Stringer:
-			if isNilInterface(val) {
-				out[key] = nilValue
-			} else {
-				out[key] = sanitizeMsg(val.String())
-			}
-		case json.Marshaler:
-			if isNilInterface(val) {
-				out[key] = nilValue
-			} else {
-				b, err := val.MarshalJSON()
-				if err != nil {
-					out[key] = sanitizeMsg(fmt.Sprint(val))
-				} else {
-					out[key] = json.RawMessage([]byte(sanitizeMsg(string(b))))
-				}
-			}
-		case encoding.TextMarshaler:
-			if isNilInterface(val) {
-				out[key] = nilValue
-			} else {
-				b, err := val.MarshalText()
-				if err != nil {
-					out[key] = sanitizeMsg(fmt.Sprint(val))
-				} else {
-					out[key] = sanitizeMsg(string(b))
-				}
-			}
-		default:
-			out[key] = sanitizeMsg(fmt.Sprint(v))
+		if redacted, ok := c.redactField(key, v); ok {
+			out[key] = c.sanitizeFieldValue(redacted)
+			continue
 		}
+		out[key] = c.sanitizeFieldValue(v)
 	}
 	return out
 }
 
-// log is the lock-free hot path: an atomic check followed by a WaitGroup register so Close can drain
-// in-flight writes before closing the writer. The double-check after Add covers the race where Close
-// observed counter==0 and proceeded to close the writer between the first Load and the Add
-func (l *zerologLogger) log(event *zerolog.Event, msg string, fields ...Fields) {
-	if l.state.closed.Load() {
-		return
+func (c *redactionConfig) sanitizeFieldValue(v any) any {
+	switch val := v.(type) {
+	case bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr, float32, float64:
+		return val
+	case string:
+		return sanitizeMsg(val)
+	case error:
+		if isNilInterface(val) {
+			return nilValue
+		}
+		return sanitizeMsg(val.Error())
+	case fmt.Stringer:
+		if isNilInterface(val) {
+			return nilValue
+		}
+		return sanitizeMsg(val.String())
+	case json.Marshaler:
+		return c.sanitizeJSONMarshaler(val)
+	case encoding.TextMarshaler:
+		return sanitizeTextMarshaler(val)
+	default:
+		return sanitizeMsg(fmt.Sprint(v))
 	}
-	l.state.inflight.Add(1)
-	defer l.state.inflight.Done()
-	if l.state.closed.Load() {
-		return
-	}
-	l.logUnchecked(event, msg, fields...)
 }
 
-// logUnchecked writes the event without checking closed; used by log and by Fatal (after which process exits)
-// Inline fields are sanitized here; WithFields already sanitizes once when building the zerolog context, so no double sanitization for child-logger fields
-func (l *zerologLogger) logUnchecked(event *zerolog.Event, msg string, fields ...Fields) {
+func (c *redactionConfig) sanitizeJSONMarshaler(val json.Marshaler) any {
+	if isNilInterface(val) {
+		return nilValue
+	}
+	b, err := val.MarshalJSON()
+	if err != nil {
+		return sanitizeMsg(fmt.Sprint(val))
+	}
+	var decoded any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		return sanitizeMsg(string(b))
+	}
+	redacted := c.redactJSONValue("", decoded)
+	out, err := json.Marshal(redacted)
+	if err != nil {
+		return sanitizeMsg(string(b))
+	}
+	return json.RawMessage(out)
+}
+
+func sanitizeTextMarshaler(val encoding.TextMarshaler) any {
+	if isNilInterface(val) {
+		return nilValue
+	}
+	b, err := val.MarshalText()
+	if err != nil {
+		return sanitizeMsg(fmt.Sprint(val))
+	}
+	return sanitizeMsg(string(b))
+}
+
+func isSensitiveKey(key string) bool {
+	return defaultRedaction.isSensitiveKey(key)
+}
+
+func (c *redactionConfig) isSensitiveKey(key string) bool {
+	if c == nil {
+		c = defaultRedaction
+	}
+	normalized := normalizeSensitiveKey(key)
+	if _, ok := c.sensitiveKeys[normalized]; ok {
+		return true
+	}
+	return strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "secret") ||
+		isSensitiveTokenKey(normalized) ||
+		strings.Contains(normalized, "privatekey") ||
+		strings.Contains(normalized, "sessionid") ||
+		strings.Contains(normalized, "csrf") ||
+		strings.Contains(normalized, "xsrf") ||
+		strings.HasSuffix(normalized, "apikey")
+}
+
+func isSensitiveTokenKey(normalized string) bool {
+	return normalized == "token" ||
+		strings.HasSuffix(normalized, "token") ||
+		strings.Contains(normalized, "accesstoken") ||
+		strings.Contains(normalized, "refreshtoken") ||
+		strings.Contains(normalized, "idtoken") ||
+		strings.Contains(normalized, "authtoken") ||
+		strings.Contains(normalized, "bearertoken") ||
+		strings.Contains(normalized, "jwttoken")
+}
+
+func normalizeSensitiveKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '-', '_', '.', ' ':
+			return -1
+		default:
+			return r
+		}
+	}, strings.ToLower(key))
+}
+
+func (c *redactionConfig) redactField(key string, value any) (any, bool) {
+	for _, redactor := range c.redactors {
+		if redacted, ok := redactor(key, value); ok {
+			return redacted, true
+		}
+	}
+	if c.isSensitiveKey(key) {
+		return redactedValue, true
+	}
+	return nil, false
+}
+
+func (c *redactionConfig) redactJSONValue(key string, value any) any {
+	if key != "" {
+		if redacted, ok := c.redactField(key, value); ok {
+			return c.jsonSafeValue(redacted)
+		}
+	}
+	switch val := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(val))
+		for k, v := range val {
+			out[sanitizeMsg(k)] = c.redactJSONValue(k, v)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = c.redactJSONValue("", item)
+		}
+		return out
+	case string:
+		return sanitizeMsg(val)
+	default:
+		return val
+	}
+}
+
+func (c *redactionConfig) jsonSafeValue(value any) any {
+	switch val := value.(type) {
+	case nil, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, uintptr, float32, float64:
+		return val
+	case string:
+		return sanitizeMsg(val)
+	case json.Marshaler:
+		return c.sanitizeJSONMarshaler(val)
+	case encoding.TextMarshaler:
+		return sanitizeTextMarshaler(val)
+	case error:
+		if isNilInterface(val) {
+			return nilValue
+		}
+		return sanitizeMsg(val.Error())
+	case fmt.Stringer:
+		if isNilInterface(val) {
+			return nilValue
+		}
+		return sanitizeMsg(val.String())
+	default:
+		return sanitizeMsg(fmt.Sprint(value))
+	}
+}
+
+// log uses the shared write gate so Close/Fatal can stop new events and drain active writes.
+func (l *zerologLogger) log(event *zerolog.Event, msg string, fields ...Fields) {
+	if !l.state.begin() {
+		return
+	}
+	defer l.state.end()
+	l.logUncheckedWithCaller(event, msg, callerFromSkip(l.callerSkip), fields...)
+}
+
+// logUncheckedWithCaller writes the event without checking closed; used by log and by Fatal (after which process exits).
+// Inline fields are sanitized here; WithFields already sanitizes once when building the zerolog context, so no double sanitization for child-logger fields.
+func (l *zerologLogger) logUncheckedWithCaller(event *zerolog.Event, msg, caller string, fields ...Fields) {
 	var merged Fields
 	if len(fields) == 1 {
 		merged = make(Fields, len(fields[0]))
@@ -482,12 +753,37 @@ func (l *zerologLogger) logUnchecked(event *zerolog.Event, msg string, fields ..
 		}
 	}
 	if len(merged) > 0 {
-		s := sanitizeFields(merged)
+		s := l.redaction.sanitizeFields(merged)
 		m := make(map[string]any, len(s))
 		maps.Copy(m, s)
 		event.Fields(m)
 	}
+	if caller != "" {
+		event.Str(zerolog.CallerFieldName, caller)
+	}
 	event.Msg(sanitizeMsg(msg))
+}
+
+func callerFromSkip(skip int) string {
+	if skip < 0 {
+		return ""
+	}
+	pc, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return ""
+	}
+	return zerolog.CallerMarshalFunc(pc, file, line)
+}
+
+func callerFromPC(pc uintptr) string {
+	if pc == 0 {
+		return ""
+	}
+	frame, _ := runtime.CallersFrames([]uintptr{pc}).Next()
+	if frame.PC == 0 || frame.File == "" {
+		return ""
+	}
+	return zerolog.CallerMarshalFunc(frame.PC, frame.File, frame.Line)
 }
 
 // convertLogLevel maps Level to zerolog.Level; unknown values map to InfoLevel

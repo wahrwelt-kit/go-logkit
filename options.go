@@ -17,21 +17,28 @@ type Option func(*Options)
 // Should be cheap and non-blocking-it runs on every *Context call. Returning a nil or empty Fields adds nothing
 type ContextExtractor func(ctx context.Context) Fields
 
-// Options holds configuration for New. Zero value for Level is treated as InfoLevel; zero Output as ConsoleOutput
+// FieldRedactor can replace a log field before it is written.
+// Return true when the field was handled and the returned value should be logged.
+// Return false to continue with the default sensitive-key redaction and value sanitization.
+type FieldRedactor func(key string, value any) (any, bool)
+
+// Options holds configuration for New. Zero value for Level is treated as InfoLevel; zero Output writes JSON to stdout
 // When Output is FileOutput or BothOutput, FileOptions.Filename must be set or New returns ErrEmptyFilename
 type Options struct {
-	Level       Level              // Minimum log level
-	Output      OutputType         // Where to write (console, file, or both); ignored when Writer is set
-	FileOptions FileOptions        // Required when Output is FileOutput or BothOutput
-	ServiceName string             // Added as "service" field to every event when non-empty
-	ExitFunc    func(int)          // Called by Fatal after logging and Close; nil uses os.Exit
-	Hooks       []zerolog.Hook     // Optional zerolog hooks; run on every event before write
-	Sampler     zerolog.Sampler    // Optional sampler; drops events to reduce volume under high load
-	StackTrace  bool               // When true, attaches stack traces from pkg/errors-style errors via WithError
-	Async       *AsyncOptions      // Optional lock-free async writer (diode) for high-throughput services
-	Extractors  []ContextExtractor // Optional context-to-fields extractors invoked by *Context methods
-	CallerSkip  int                // Extra caller frames to skip; non-zero when wrapping logkit in a user-defined adapter
-	Writer      io.Writer          // Custom output writer; overrides Output/FileOptions when non-nil
+	Level         Level              // Minimum log level
+	Output        OutputType         // Where to write (console, file, or both); ignored when Writer is set
+	FileOptions   FileOptions        // Required when Output is FileOutput or BothOutput
+	ServiceName   string             // Added as "service" field to every event when non-empty
+	ExitFunc      func(int)          // Called by Fatal after logging and Close; nil uses os.Exit
+	Hooks         []zerolog.Hook     // Optional zerolog hooks; run on every event before write
+	Sampler       zerolog.Sampler    // Optional sampler; drops events to reduce volume under high load
+	StackTrace    bool               // When true, attaches stack traces from pkg/errors-style errors via WithError
+	Async         *AsyncOptions      // Optional lock-free async writer (diode) for high-throughput services
+	Extractors    []ContextExtractor // Optional context-to-fields extractors invoked by *Context methods
+	CallerSkip    int                // Extra caller frames to skip; non-zero when wrapping logkit in a user-defined adapter
+	Writer        io.Writer          // Custom output writer; overrides Output/FileOptions when non-nil
+	Redactors     []FieldRedactor    // Optional field redactors invoked before default sensitive-key redaction
+	SensitiveKeys []string           // Additional field keys redacted with the default redacted value
 }
 
 // FileOptions configures file output (lumberjack). Filename is required when Output is FileOutput or BothOutput
@@ -118,12 +125,10 @@ func WithSampling(sampler zerolog.Sampler) Option {
 	}
 }
 
-// WithStackTrace enables stack trace extraction for errors attached via WithError
+// WithStackTrace enables stack trace extraction for errors attached via WithError on this logger
 // Requires errors that implement StackTrace() (e.g. wrapped via github.com/pkg/errors or cockroachdb/errors)
 // Standard errors created by errors.New or fmt.Errorf without %w do not carry stacks and produce no stack field
-// This option installs github.com/rs/zerolog/pkgerrors.MarshalStack as the global zerolog.ErrorStackMarshaler-
-// the marshaler is process-global, so concurrent New calls with different StackTrace settings race on the global
-// Configure once at startup to avoid surprises
+// The stack marshaler is logger-local and does not mutate zerolog's process-global ErrorStackMarshaler
 func WithStackTrace() Option {
 	return func(o *Options) {
 		o.StackTrace = true
@@ -133,7 +138,8 @@ func WithStackTrace() Option {
 // WithAsync wraps the configured output in a lock-free diode writer for high-throughput services
 // The diode buffers events and drops oldest under sustained pressure instead of blocking the producer-
 // trade event loss for predictable latency. Recommended only for services emitting >50k log events/sec
-// Size is the ring buffer capacity; PollInterval is the consumer drain interval (e.g. 10*time.Millisecond)
+// Size is the ring buffer capacity and must be positive; PollInterval is the consumer drain interval (e.g. 10*time.Millisecond)
+// PollInterval may be zero to use diode's waiter mode. Negative intervals are rejected
 // OnDrop is called with the number of missed events when dropping occurs; use it to surface a metric
 // Close on the logger flushes the diode before closing the underlying file writer
 func WithAsync(ao AsyncOptions) Option {
@@ -191,5 +197,31 @@ func WithSyncWriter(w io.Writer) Option {
 			return
 		}
 		o.Writer = zerolog.SyncWriter(w)
+	}
+}
+
+// WithSensitiveKeys adds extra field keys to the default redaction set.
+// Matching ignores '-', '_', '.', and spaces and is case-insensitive.
+// Empty keys are ignored. Multiple calls append.
+func WithSensitiveKeys(keys ...string) Option {
+	return func(o *Options) {
+		for _, key := range keys {
+			if key != "" {
+				o.SensitiveKeys = append(o.SensitiveKeys, key)
+			}
+		}
+	}
+}
+
+// WithRedactor registers custom field redactors.
+// Redactors run before default sensitive-key redaction and in registration order.
+// Nil redactors are ignored. Multiple calls append.
+func WithRedactor(redactors ...FieldRedactor) Option {
+	return func(o *Options) {
+		for _, redactor := range redactors {
+			if redactor != nil {
+				o.Redactors = append(o.Redactors, redactor)
+			}
+		}
 	}
 }

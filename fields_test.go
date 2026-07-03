@@ -14,7 +14,7 @@ func TestFieldsHelpers(t *testing.T) {
 	assert.Equal(t, Fields{"request_id": "r1"}, RequestID("r1"))
 	assert.Equal(t, Fields{"user_id": "u1"}, UserID("u1"))
 	assert.Equal(t, Fields{"duration": "1s"}, Duration(time.Second))
-	assert.Equal(t, Fields{"duration": int64(1500)}, DurationMs(1500*time.Millisecond))
+	assert.Equal(t, Fields{"duration_ms": int64(1500)}, DurationMs(1500*time.Millisecond))
 	assert.Equal(t, Fields{"component": "http"}, Component("http"))
 	assert.Nil(t, Error(nil))
 	assert.Equal(t, Fields{keyError: errors.New("e")}, Error(errors.New("e")))

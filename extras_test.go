@@ -3,6 +3,7 @@ package logkit
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -180,6 +181,63 @@ func TestWithStackTrace_NoStackForPlainError(t *testing.T) {
 	require.NotContains(t, out, `"stack":`)
 }
 
+func TestWithStackTrace_DoesNotMutateGlobalMarshaler(t *testing.T) {
+	original := zerolog.ErrorStackMarshaler
+	zerolog.ErrorStackMarshaler = nil                            //nolint:reassign // test verifies WithStackTrace no longer mutates global zerolog state
+	t.Cleanup(func() { zerolog.ErrorStackMarshaler = original }) //nolint:reassign // restore process-global test state
+
+	l, err := New(
+		WithLevel(InfoLevel),
+		WithWriter(io.Discard),
+		WithStackTrace(),
+	)
+	require.NoError(t, err)
+	l.WithError(pkgerrors.WithStack(errors.New("base"))).Error("boom")
+	require.Nil(t, zerolog.ErrorStackMarshaler)
+}
+
+func TestWithStackTrace_IgnoresExternalGlobalMarshalerWhenDisabled(t *testing.T) {
+	original := zerolog.ErrorStackMarshaler
+	zerolog.ErrorStackMarshaler = func(error) any { return "global-stack" } //nolint:reassign // test-only global override
+	t.Cleanup(func() { zerolog.ErrorStackMarshaler = original })            //nolint:reassign // restore process-global test state
+
+	dir := t.TempDir()
+	filename := dir + "/global-stack.log"
+	l, err := New(
+		WithLevel(InfoLevel),
+		WithOutput(FileOutput),
+		WithFileOptions(FileOptions{Filename: filename}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = l.Close() })
+	l.WithError(errors.New("plain")).Error("boom")
+	require.NoError(t, l.Close())
+	data, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), `"stack":`)
+}
+
+func TestWithAsync_InvalidOptions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		opts AsyncOptions
+	}{
+		{name: "zero size", opts: AsyncOptions{}},
+		{name: "negative size", opts: AsyncOptions{Size: -1}},
+		{name: "negative poll interval", opts: AsyncOptions{Size: 1, PollInterval: -time.Millisecond}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			l, err := New(WithWriter(io.Discard), WithAsync(tt.opts))
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrInvalidAsyncOptions)
+			require.Nil(t, l)
+		})
+	}
+}
+
 func TestWithAsync_FlushesPendingEventsOnClose(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -249,4 +307,21 @@ func TestWithAsync_SingleCloseOnCustomWriter(t *testing.T) {
 	l.Info("async custom writer")
 	require.NoError(t, l.Close())
 	require.Equal(t, int32(1), cc.closed.Load(), "custom writer Close must be called exactly once even with WithAsync")
+}
+
+func TestFatal_OnlyRunsOnce(t *testing.T) {
+	t.Parallel()
+	buf := &syncBuffer{}
+	exitCalls := atomic.Int32{}
+	l, err := New(
+		WithLevel(InfoLevel),
+		WithWriter(buf),
+		WithExitFunc(func(_ int) { exitCalls.Add(1) }),
+	)
+	require.NoError(t, err)
+	l.Fatal("fatal once")
+	l.Fatal("fatal twice")
+	require.Equal(t, int32(1), exitCalls.Load())
+	require.Equal(t, 1, strings.Count(buf.String(), "fatal once"))
+	require.NotContains(t, buf.String(), "fatal twice")
 }

@@ -15,14 +15,14 @@ const (
 	FatalLevel
 )
 
-// OutputType selects where log output is written (console, file, or both)
+// OutputType selects where log output is written (JSON stdout, pretty console, file, or both)
 type OutputType int
 
-// ConsoleOutput writes JSON log events to stdout via zerolog's ConsoleWriter (human-readable with colours and timestamps)
 const (
-	ConsoleOutput OutputType = iota // Write JSON log events to stdout via zerolog's ConsoleWriter (human-readable with colours and timestamps)
-	FileOutput                      // Write JSON log events to a rotating file via lumberjack. FileOptions.Filename must be set
-	BothOutput                      // Write to both stdout (ConsoleWriter) and a rotating file simultaneously
+	ConsoleOutput       OutputType = iota // Write JSON log events to stdout
+	PrettyConsoleOutput                   // Write human-readable console events to stdout; intended for local development
+	FileOutput                            // Write JSON log events to a rotating file via lumberjack. FileOptions.Filename must be set
+	BothOutput                            // Write JSON events to both stdout and a rotating file simultaneously
 )
 
 // Fields is a key-value map attached to a log event. Keys and values are sanitized: control characters
@@ -42,8 +42,8 @@ type Leveler interface {
 }
 
 // Logger is the interface for structured logging. Implementations are safe for concurrent use
-// Close releases underlying output (e.g. file); child loggers from WithFields or WithError share the same output-
-// closing any of them closes it for all. Call Close only once, typically on the root logger via defer
+// Close releases underlying output (e.g. file); child loggers from WithFields or WithError share the same output.
+// Closing any of them closes it for all. Call Close only once, typically on the root logger via defer
 type Logger interface {
 	// Debug emits a debug-level event. No-op when the logger level is above DebugLevel
 	Debug(msg string, fields ...Fields)
@@ -56,16 +56,15 @@ type Logger interface {
 	// Fatal emits a fatal-level event, flushes output, then calls os.Exit(1). Does not return
 	// Use Noop() or WithExitFunc in tests to prevent process termination
 	Fatal(msg string, fields ...Fields)
-	// DebugContext is like Debug but accepts a context. The context is currently unused by the
-	// zerolog backend; it is part of the interface for future compatibility and middleware use
+	// DebugContext is like Debug and enriches the event with configured ContextExtractors
 	DebugContext(ctx context.Context, msg string, fields ...Fields)
-	// InfoContext is like Info with a context parameter; see DebugContext for usage notes
+	// InfoContext is like Info and enriches the event with configured ContextExtractors
 	InfoContext(ctx context.Context, msg string, fields ...Fields)
-	// WarnContext is like Warn with a context parameter; see DebugContext for usage notes
+	// WarnContext is like Warn and enriches the event with configured ContextExtractors
 	WarnContext(ctx context.Context, msg string, fields ...Fields)
-	// ErrorContext is like Error with a context parameter; see DebugContext for usage notes
+	// ErrorContext is like Error and enriches the event with configured ContextExtractors
 	ErrorContext(ctx context.Context, msg string, fields ...Fields)
-	// FatalContext is like Fatal with a context parameter; see DebugContext for usage notes
+	// FatalContext is like Fatal and enriches the event with configured ContextExtractors
 	FatalContext(ctx context.Context, msg string, fields ...Fields)
 	// WithFields returns a child logger with the given fields attached to every subsequent event
 	// The child shares the underlying output with the parent; closing either closes both

@@ -5,25 +5,25 @@
 //
 // # Building a logger
 //
-// New builds a Logger from options. Defaults are InfoLevel and ConsoleOutput. Nil options are ignored
+// New builds a Logger from options. Defaults are InfoLevel and JSON stdout. Nil options are ignored
 // Use WithLevel, WithOutput, WithFileOptions, WithServiceName, WithExitFunc, WithHooks, WithSampling,
-// WithStackTrace, and WithAsync to configure
+// WithStackTrace, WithAsync, WithSensitiveKeys, and WithRedactor to configure
 // New returns ErrEmptyFilename when Output is FileOutput or BothOutput and FileOptions.Filename is empty
 // Unknown Level values are mapped to InfoLevel
 //
 // # Output
 //
-// ConsoleOutput writes to stdout in human-readable format (zerolog console writer)
+// ConsoleOutput writes JSON events to stdout. PrettyConsoleOutput writes human-readable development output
 // FileOutput uses lumberjack for rotation: set FileOptions with Filename required; MaxSize, MaxBackups,
 // MaxAge use defaults (100 MB, 5 backups, 30 days) when zero. BothOutput writes to stdout and to the file
 // Child loggers from WithFields or WithError share the root's output and closer; Close on any of them
-// closes the underlying file for all-call Close only on the root logger, typically via defer
+// closes the underlying output for all. Call Close only on the root logger, typically via defer
 //
 // # Levels and methods
 //
 // Logger provides Debug, Info, Warn, Error, and Fatal. Each accepts a message and optional variadic Fields
-// multiple Fields are merged (later keys override). DebugContext, InfoContext, and similar methods accept
-// context.Context for future use (e.g. trace IDs); the context is not yet used
+// multiple Fields are merged (later keys override). DebugContext, InfoContext, and similar methods run
+// configured ContextExtractors before merging user-provided fields
 // Fatal writes the event, calls Close, then calls the configured exit function (default os.Exit(1))
 // deferred functions in the caller are not run. For graceful shutdown use Error and an explicit exit path
 // Noop returns a logger that discards all output; Fatal on the noop logger does not exit (for tests)
@@ -37,8 +37,9 @@
 //
 // TraceID, RequestID, UserID, Error, Duration, DurationMs, and Component return Fields with conventional keys
 // (trace_id, request_id, user_id, error, duration, component). Use them for consistent structured logs
-// Duration formats as a string (e.g. "1.5s"); DurationMs formats as int64 milliseconds for ELK/Loki/ClickHouse
+// Duration formats as a string (e.g. "1.5s"); DurationMs writes duration_ms as int64 milliseconds for ELK/Loki/ClickHouse
 // Error returns nil when err is nil (no field added)
+// Fields are sanitized before writing: control characters are replaced and sensitive keys are redacted
 //
 // # Hooks
 //
@@ -58,16 +59,14 @@
 // WithStackTrace enables stack trace extraction for errors attached via WithError
 // Requires errors that implement StackTrace() (github.com/pkg/errors, cockroachdb/errors, etc.)
 // Standard errors from errors.New or fmt.Errorf without %w do not carry stacks and produce no stack field
-// The option installs github.com/rs/zerolog/pkgerrors.MarshalStack as the global zerolog.ErrorStackMarshaler;
-// this marshaler is process-global, so concurrent New calls with conflicting StackTrace settings race-
-// configure once at startup
+// The stack marshaler is logger-local and does not mutate zerolog's process-global ErrorStackMarshaler
 //
 // # Async output (diode)
 //
 // WithAsync wraps the configured output in a lock-free diode writer for high-throughput services
 // The diode buffers events and drops oldest under sustained pressure instead of blocking the producer-
 // trade event loss for predictable producer latency. Recommended only for services emitting >50k events/sec
-// AsyncOptions.OnDrop receives the missed-event count when drops occur; surface it as a metric
+// AsyncOptions.Size must be positive. AsyncOptions.OnDrop receives the missed-event count when drops occur; surface it as a metric
 // Close flushes the diode (with a small wait) before closing the underlying file writer
 //
 // # Custom writers
@@ -84,6 +83,14 @@
 // WithFields chains in handlers. Multiple extractors compose left-to-right; user-provided Fields override
 // extracted Fields. Extractors run on the caller goroutine, so they must be cheap and non-blocking
 //
+// # Redaction
+//
+// Sensitive field keys such as authorization, proxy_authorization, cookie, set_cookie, password, credential
+// token keys, secret, api_key, session_id, csrf, xsrf, and private_key are redacted by default. Matching ignores
+// '-', '_', '.', and spaces and is case-insensitive. WithSensitiveKeys adds project-specific keys.
+// WithRedactor registers custom redaction functions that run before default sensitive-key matching.
+// json.Marshaler values are decoded and nested object keys are redacted before the JSON is written.
+//
 // # Caller skip
 //
 // WithCallerSkip adjusts the number of stack frames the caller field skips. Use when wrapping logkit in your
@@ -92,27 +99,28 @@
 //
 // # Concurrency
 //
-// The hot path is lock-free: a single atomic load checks the closed flag before any work, and an in-flight
-// counter ensures Close waits for active log() calls to drain before closing the writer. The original
-// RWMutex-based design has been replaced to remove cache-line contention when many goroutines log concurrently.
+// The hot path first checks the closed flag with an atomic load, then registers the write in a small drain gate.
+// This lets Close and Fatal stop new events and wait for active log() calls to finish before closing the writer.
 // Hooks, samplers, and extractors run on the caller goroutine - keep them cheap to preserve this property
 //
 // # slog integration
 //
 // SlogHandler returns a slog.Handler that forwards log/slog records to a Logger. Use slog.New(SlogHandler(l))
-// to pass a logkit logger to code that expects slog. WithGroup and WithAttrs are supported. The handler is
-// the integration point for third-party libraries that emit through log/slog so their events flow through
-// the same zerolog backend instead of a separate stdout/JSON stream
+// to pass a logkit logger to code that expects slog. WithGroup and WithAttrs are supported. For loggers
+// created by New, caller is taken from slog.Record.PC so output points to the original slog call site.
+// The handler is the integration point for third-party libraries that emit through log/slog so their events
+// flow through the same zerolog backend instead of a separate stdout/JSON stream
 //
 // # Conventions
 //
-// Do not log secrets (passwords, tokens, API keys) or unredacted PII in Fields. Control characters (including
-// \r, \n, NUL, U+2028, U+2029) in messages and in field keys and values are replaced with space to reduce
-// log injection
+// Do not intentionally log secrets or unredacted PII in Fields. Redaction is a safety net, not a data
+// classification system. Control characters (including \r, \n, NUL, U+2028, U+2029) in messages and in
+// field keys and values are replaced with space to reduce log injection
 //
 // # Errors
 //
-// ErrEmptyFilename is the only error returned by New; use errors.Is to detect it
+// New returns ErrEmptyFilename for missing file names and ErrInvalidAsyncOptions for invalid async settings;
+// use errors.Is to detect both
 //
 // # Thread safety
 //

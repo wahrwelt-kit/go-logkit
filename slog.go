@@ -11,10 +11,8 @@ import (
 // WithGroup and WithAttrs are supported; group names are prefixed to attribute keys (e.g. group "http", attr "method" -> "http.method")
 // slog.Group inline attrs in records or WithAttrs calls are recursively expanded with their key as prefix
 // If the Logger implements Leveler, Enabled returns false for levels that would be dropped, avoiding
-// unnecessary slog.Record construction
-//
-// Caller info limitation: zerolog's automatic caller points to slog.go, not the original call site
-// If accurate caller attribution matters, disable caller in the logger or use slog.Record.PC directly
+// unnecessary slog.Record construction. For loggers created by New, caller is taken from slog.Record.PC
+// so slog output points to the original slog call site.
 func SlogHandler(l Logger) slog.Handler {
 	if l == nil {
 		l = noopLogger{}
@@ -36,7 +34,7 @@ func (a *slogAdapter) Enabled(_ context.Context, level slog.Level) bool {
 	return slogToLogkitLevel(level) >= lev.Level()
 }
 
-func (a *slogAdapter) Handle(_ context.Context, r slog.Record) error {
+func (a *slogAdapter) Handle(ctx context.Context, r slog.Record) error {
 	fields := make(Fields, len(a.attrs)+r.NumAttrs())
 	prefix := a.group
 	if prefix != "" {
@@ -48,18 +46,44 @@ func (a *slogAdapter) Handle(_ context.Context, r slog.Record) error {
 		return true
 	})
 
+	if zl, ok := a.logger.(*zerologLogger); ok && !isNilInterface(zl) {
+		zl.logSlogRecord(ctx, r, fields)
+		return nil
+	}
+
 	msg := r.Message
 	switch {
 	case r.Level >= slog.LevelError:
-		a.logger.Error(msg, fields)
+		a.logger.ErrorContext(ctx, msg, fields)
 	case r.Level >= slog.LevelWarn:
-		a.logger.Warn(msg, fields)
+		a.logger.WarnContext(ctx, msg, fields)
 	case r.Level >= slog.LevelInfo:
-		a.logger.Info(msg, fields)
+		a.logger.InfoContext(ctx, msg, fields)
 	default:
-		a.logger.Debug(msg, fields)
+		a.logger.DebugContext(ctx, msg, fields)
 	}
 	return nil
+}
+
+func (l *zerologLogger) logSlogRecord(ctx context.Context, r slog.Record, fields Fields) {
+	if !l.state.begin() {
+		return
+	}
+	defer l.state.end()
+
+	allFields := l.applyExtractors(ctx, []Fields{fields})
+	caller := callerFromPC(r.PC)
+	msg := r.Message
+	switch {
+	case r.Level >= slog.LevelError:
+		l.logUncheckedWithCaller(l.zl.Error(), msg, caller, allFields...) //nolint:zerologlint // event consumed by logUncheckedWithCaller
+	case r.Level >= slog.LevelWarn:
+		l.logUncheckedWithCaller(l.zl.Warn(), msg, caller, allFields...) //nolint:zerologlint // event consumed by logUncheckedWithCaller
+	case r.Level >= slog.LevelInfo:
+		l.logUncheckedWithCaller(l.zl.Info(), msg, caller, allFields...) //nolint:zerologlint // event consumed by logUncheckedWithCaller
+	default:
+		l.logUncheckedWithCaller(l.zl.Debug(), msg, caller, allFields...) //nolint:zerologlint // event consumed by logUncheckedWithCaller
+	}
 }
 
 func (a *slogAdapter) WithAttrs(attrs []slog.Attr) slog.Handler {

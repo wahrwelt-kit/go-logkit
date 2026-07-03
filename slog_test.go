@@ -110,6 +110,36 @@ func TestSlogHandler_GroupAttrInRecord(t *testing.T) {
 	require.Contains(t, out, "/api")
 }
 
+func TestSlogHandler_UsesContextMethods(t *testing.T) {
+	t.Parallel()
+	buf := &bytes.Buffer{}
+	l, err := New(
+		WithLevel(InfoLevel),
+		WithWriter(buf),
+		WithContextExtractor(func(ctx context.Context) Fields {
+			if v, ok := ctx.Value(keyTrace).(string); ok {
+				return Fields{keyTraceID: v}
+			}
+			return nil
+		}),
+	)
+	require.NoError(t, err)
+	ctx := context.WithValue(context.Background(), keyTrace, "slog-trace")
+	slog.New(SlogHandler(l)).InfoContext(ctx, "handled")
+	require.Contains(t, buf.String(), `"trace_id":"slog-trace"`)
+	require.Contains(t, buf.String(), "handled")
+}
+
+func TestSlogHandler_UsesRecordCaller(t *testing.T) {
+	t.Parallel()
+	l, buf := captureLogger(t)
+	slog.New(SlogHandler(l)).Info("slog caller")
+	out := buf.String()
+	require.Contains(t, out, "slog caller")
+	require.Contains(t, out, "slog_test.go")
+	require.NotContains(t, out, "slog.go")
+}
+
 func TestSlogHandler_WithAttrs_GroupAttr(t *testing.T) {
 	t.Parallel()
 	l, buf := captureLogger(t)

@@ -31,7 +31,7 @@ func BenchmarkInfoNoFields(b *testing.B) {
 
 func BenchmarkInfoWithFields(b *testing.B) {
 	l := benchLogger(b, WithLevel(InfoLevel), WithOutput(ConsoleOutput))
-	f := Fields{"key": "value", "count": 42}
+	f := Fields{"key": testFieldValue, "count": 42}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for range b.N {
@@ -87,8 +87,8 @@ func BenchmarkInfo_WithHook(b *testing.B) {
 }
 
 // BenchmarkInfo_Parallel measures the hot path under contention from multiple goroutines
-// This is the case the atomic.Bool + WaitGroup design optimizes for - the prior RWMutex would
-// cache-line bounce on every RLock; atomic operations split state and reduce cross-CPU traffic
+// This is the case the atomic fast path optimizes for; the mutex is only taken when an event is emitted
+// and Close/Fatal need a precise drain of active writes.
 func BenchmarkInfo_Parallel(b *testing.B) {
 	l := benchLogger(b, WithLevel(InfoLevel), WithOutput(ConsoleOutput))
 	b.ResetTimer()

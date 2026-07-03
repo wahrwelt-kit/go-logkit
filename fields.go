@@ -3,12 +3,23 @@ package logkit
 import "time"
 
 const (
-	keyTraceID   = "trace_id"
-	keyRequestID = "request_id"
-	keyUserID    = "user_id"
-	keyError     = "error"
-	keyDuration  = "duration"
-	keyComponent = "component"
+	keyTraceID    = "trace_id"
+	keyRequestID  = "request_id"
+	keyUserID     = "user_id"
+	keyError      = "error"
+	keyDuration   = "duration"
+	keyDurationMS = "duration_ms"
+	keyComponent  = "component"
+	keySecret     = "secret"
+
+	keyAuthorization      = "authorization"
+	keyProxyAuthorization = "proxy_authorization"
+	keyCookie             = "cookie"
+	keySetCookie          = "set_cookie"
+	keyPassword           = "password"
+	keyAPIKey             = "api_key"
+	keyAccessToken        = "access_token"
+	keyPrivateKey         = "private_key"
 )
 
 // TraceID returns Fields with the trace_id key for distributed tracing. Attach to log events
@@ -37,16 +48,15 @@ func Error(err error) Fields {
 	return Fields{keyError: err}
 }
 
-// Duration returns Fields with the duration key formatted as a string (e.g. "1.5s"). Prefer DurationMs
-// when logs are ingested by structured backends (ELK, Loki, ClickHouse) for querying and aggregation
+// Duration returns Fields with the duration key formatted as a string (e.g. "1.5s").
 func Duration(d time.Duration) Fields {
 	return Fields{keyDuration: d.String()}
 }
 
-// DurationMs returns Fields with the duration key as int64 milliseconds. Use for structured backends
+// DurationMs returns Fields with the duration_ms key as int64 milliseconds. Use for structured backends
 // (ELK, Loki, ClickHouse) so duration can be queried and aggregated; for human-readable logs use Duration
 func DurationMs(d time.Duration) Fields {
-	return Fields{keyDuration: d.Milliseconds()}
+	return Fields{keyDurationMS: d.Milliseconds()}
 }
 
 // Component returns Fields with the component key. Use to tag events by handler name, service layer,

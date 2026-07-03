@@ -2,6 +2,7 @@ package logkit
 
 import (
 	"errors"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -198,6 +199,163 @@ func TestSanitizeFields(t *testing.T) {
 	}
 }
 
+func TestSanitizeFields_RedactsSensitiveKeys(t *testing.T) {
+	t.Parallel()
+	out := sanitizeFields(Fields{
+		keyAuthorization:      "Bearer " + testSecretValue,
+		keyProxyAuthorization: "Basic " + testSecretValue,
+		keyCookie:             "session=" + testSecretValue,
+		keySetCookie:          "session=" + testSecretValue,
+		keyPassword:           testSecretValue,
+		keyAPIKey:             testSecretValue,
+		keyAccessToken:        testSecretValue,
+		"session_id":          testSecretValue,
+		"csrf":                testSecretValue,
+		"xsrf":                testSecretValue,
+		keyPrivateKey:         testSecretValue,
+		"safe":                "visible",
+	})
+	require.Equal(t, redactedValue, out[keyAuthorization])
+	require.Equal(t, redactedValue, out[keyProxyAuthorization])
+	require.Equal(t, redactedValue, out[keyCookie])
+	require.Equal(t, redactedValue, out[keySetCookie])
+	require.Equal(t, redactedValue, out[keyPassword])
+	require.Equal(t, redactedValue, out[keyAPIKey])
+	require.Equal(t, redactedValue, out[keyAccessToken])
+	require.Equal(t, redactedValue, out["session_id"])
+	require.Equal(t, redactedValue, out["csrf"])
+	require.Equal(t, redactedValue, out["xsrf"])
+	require.Equal(t, redactedValue, out[keyPrivateKey])
+	require.Equal(t, "visible", out["safe"])
+}
+
+func TestSanitizeFields_DoesNotRedactTokenMetrics(t *testing.T) {
+	t.Parallel()
+	out := sanitizeFields(Fields{
+		"github_token": testSecretValue,
+		"token_count":  42,
+		"token_type":   "access",
+	})
+	require.Equal(t, redactedValue, out["github_token"])
+	require.Equal(t, 42, out["token_count"])
+	require.Equal(t, "access", out["token_type"])
+}
+
+func TestWithSensitiveKeys_RedactsAdditionalKeys(t *testing.T) {
+	t.Parallel()
+	buf := &syncBuffer{}
+	l, err := New(
+		WithWriter(buf),
+		WithSensitiveKeys("tenant_license"),
+	)
+	require.NoError(t, err)
+	l.Info("configured redaction", Fields{"tenant_license": testSecretValue, "tenant": "acme"})
+	out := buf.String()
+	require.Contains(t, out, `"tenant_license":"[REDACTED]"`)
+	require.NotContains(t, out, testSecretValue)
+	require.Contains(t, out, `"tenant":"acme"`)
+}
+
+func TestWithRedactor_CustomReplacement(t *testing.T) {
+	t.Parallel()
+	buf := &syncBuffer{}
+	l, err := New(
+		WithWriter(buf),
+		WithRedactor(func(key string, value any) (any, bool) {
+			if key == "email" {
+				return "redacted@example.invalid", true
+			}
+			return value, false
+		}),
+	)
+	require.NoError(t, err)
+	l.WithFields(Fields{"email": "user@example.com"}).Info("custom redactor")
+	out := buf.String()
+	require.Contains(t, out, `"email":"redacted@example.invalid"`)
+	require.NotContains(t, out, "user@example.com")
+}
+
+type jsonSecretPayload struct{}
+
+func (jsonSecretPayload) MarshalJSON() ([]byte, error) {
+	return []byte(`{"safe":"ok","token":"secret-token","nested":{"private_key":"secret-key"},"items":[{"csrf":"secret-csrf"}]}`), nil
+}
+
+type jsonRedactorPayload struct{}
+
+func (jsonRedactorPayload) MarshalJSON() ([]byte, error) {
+	return []byte(`{"custom_nested":"replace-me"}`), nil
+}
+
+type jsonCustomSensitivePayload struct{}
+
+func (jsonCustomSensitivePayload) MarshalJSON() ([]byte, error) {
+	return []byte(`{"custom_secret":"custom-secret","safe":"ok"}`), nil
+}
+
+func TestJSONMarshaler_RedactsNestedSensitiveKeys(t *testing.T) {
+	t.Parallel()
+	buf := &syncBuffer{}
+	l, err := New(WithWriter(buf))
+	require.NoError(t, err)
+	l.Info("json payload", Fields{testPayloadKey: jsonSecretPayload{}})
+	out := buf.String()
+	require.Contains(t, out, `"safe":"ok"`)
+	require.Contains(t, out, `"token":"[REDACTED]"`)
+	require.Contains(t, out, `"private_key":"[REDACTED]"`)
+	require.Contains(t, out, `"csrf":"[REDACTED]"`)
+	require.NotContains(t, out, "secret-token")
+	require.NotContains(t, out, "secret-key")
+	require.NotContains(t, out, "secret-csrf")
+}
+
+func TestJSONMarshaler_CustomRedactorUsesConfiguredSensitiveKeys(t *testing.T) {
+	t.Parallel()
+	buf := &syncBuffer{}
+	l, err := New(
+		WithWriter(buf),
+		WithSensitiveKeys("custom_secret"),
+		WithRedactor(func(key string, value any) (any, bool) {
+			if key == "custom_nested" {
+				return jsonCustomSensitivePayload{}, true
+			}
+			return value, false
+		}),
+	)
+	require.NoError(t, err)
+	l.Info("json payload", Fields{testPayloadKey: jsonRedactorPayload{}})
+	out := buf.String()
+	require.Contains(t, out, `"custom_secret":"[REDACTED]"`)
+	require.Contains(t, out, `"safe":"ok"`)
+	require.NotContains(t, out, "custom-secret")
+}
+
+func TestJSONMarshaler_TopLevelSensitiveKeyRedactsWholeValue(t *testing.T) {
+	t.Parallel()
+	buf := &syncBuffer{}
+	l, err := New(WithWriter(buf))
+	require.NoError(t, err)
+	l.Info("json payload", Fields{"secret_payload": jsonSecretPayload{}})
+	out := buf.String()
+	require.Contains(t, out, `"secret_payload":"[REDACTED]"`)
+	require.NotContains(t, out, `"safe":"ok"`)
+}
+
+type invalidJSONMarshaler struct{}
+
+func (invalidJSONMarshaler) MarshalJSON() ([]byte, error) {
+	return []byte(`{"token":`), nil
+}
+
+func TestJSONMarshaler_InvalidJSONFallsBackToString(t *testing.T) {
+	t.Parallel()
+	l, err := New(WithWriter(io.Discard))
+	require.NoError(t, err)
+	require.NotPanics(t, func() {
+		l.Info("invalid json", Fields{"payload": invalidJSONMarshaler{}})
+	})
+}
+
 func TestWithError_Nil_NoErrorField(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -227,6 +385,19 @@ func TestClosedLoggerSilentlyDrops(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), "first write")
 	require.NotContains(t, string(data), "should not appear")
+}
+
+func TestClose_NoCloserStopsFurtherWrites(t *testing.T) {
+	t.Parallel()
+	buf := &syncBuffer{}
+	l, err := New(WithWriter(buf))
+	require.NoError(t, err)
+	l.Info("before close")
+	require.NoError(t, l.Close())
+	l.Info("after close")
+	out := buf.String()
+	require.Contains(t, out, "before close")
+	require.NotContains(t, out, "after close")
 }
 
 func TestBothOutput_WritesToFile(t *testing.T) {

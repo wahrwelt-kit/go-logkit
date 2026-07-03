@@ -20,7 +20,7 @@ func FromContext(ctx context.Context) Logger {
 	if ctx == nil {
 		return Noop()
 	}
-	if l, ok := ctx.Value(contextKey{}).(Logger); ok && l != nil {
+	if l, ok := ctx.Value(contextKey{}).(Logger); ok && !isNilInterface(l) {
 		return l
 	}
 	return Noop()
